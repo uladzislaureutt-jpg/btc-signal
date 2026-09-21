@@ -1,4 +1,4 @@
-# BTC Technical Signal Engine · Core 0.1
+# BTC Technical Signal Engine · Core 0.1.1
 
 Shadow-инструмент для BTCUSDT: **1D regime → 4H level zone → 1H confirmation → score → Telegram**.
 
@@ -39,6 +39,8 @@ btc-signal backtest --days 240
 ```
 
 Результаты сделок появятся в `reports/backtest_trades.csv`, сводка — в терминале.
+
+На GitHub backtest запускается вручную: **Actions → BTC 240-day backtest → Run workflow**. GitHub загрузит историю с учётом отдельного 210-дневного прогрева индикаторов и сохранит CSV и JSON-сводку в артефакте запуска.
 
 ## Telegram и Supabase
 

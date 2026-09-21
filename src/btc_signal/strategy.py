@@ -33,7 +33,7 @@ class Decision:
     factors: dict[str, dict[str, object]]
     vetoes: list[str]
     provider: str | None = None
-    strategy_version: str = "0.1.0"
+    strategy_version: str = "0.1.1"
 
     @property
     def dedup_key(self) -> str:
@@ -85,6 +85,17 @@ def _factor(value: object, passed: bool, points: int, maximum: int) -> dict[str,
     return {"value": value, "passed": passed, "points": points if passed else 0, "max": maximum}
 
 
+def _risk_geometry(side: Side, price: float, stop: float, atr: float) -> tuple[float, bool]:
+    minimum_risk = (
+        atr * 0.1
+        if np.isfinite(atr) and atr > 0
+        else max(abs(price) * 1e-6, 1e-8)
+    )
+    raw_risk = price - stop if side == "long" else stop - price
+    valid = bool(np.isfinite(raw_risk) and raw_risk >= minimum_risk)
+    return (float(raw_risk) if valid else float(minimum_risk), valid)
+
+
 def _candidate(
     side: Side,
     regime: str,
@@ -106,7 +117,7 @@ def _candidate(
         aligned_structure = structure_4h in ("bullish", "neutral")
         stop = zone.low - atr_1h * float(config["risk"]["stop_atr"])
         entry_low, entry_high = zone.midpoint, max(zone.high, price)
-        risk = max(price - stop, atr_1h * 0.1)
+        risk, stop_geometry_valid = _risk_geometry(side, price, stop, atr_1h)
         opposing = sorted(
             (item.midpoint for item in levels if item.side == "resistance" and item.midpoint > price)
         )
@@ -119,7 +130,7 @@ def _candidate(
         aligned_structure = structure_4h in ("bearish", "neutral")
         stop = zone.high + atr_1h * float(config["risk"]["stop_atr"])
         entry_low, entry_high = min(zone.low, price), zone.midpoint
-        risk = max(stop - price, atr_1h * 0.1)
+        risk, stop_geometry_valid = _risk_geometry(side, price, stop, atr_1h)
         opposing = sorted(
             (item.midpoint for item in levels if item.side == "support" and item.midpoint < price),
             reverse=True,
@@ -146,13 +157,15 @@ def _candidate(
         "volatility": _factor(round(volatility_ratio, 5), volatility_ok, int(weights["volatility"]), int(weights["volatility"])),
     }
     score = sum(int(item["points"]) for item in factors.values())
-    rr = abs(target_1 - price) / risk
+    rr = abs(target_1 - price) / risk if stop_geometry_valid else 0.0
     vetoes: list[str] = []
     if zone.quality < int(config["levels"]["min_quality"]):
         vetoes.append("weak_level")
     if not aligned_regime:
         vetoes.append("daily_regime_conflict")
-    if rr < float(config["risk"]["min_rr"]):
+    if not stop_geometry_valid:
+        vetoes.append("invalid_stop_geometry")
+    elif rr < float(config["risk"]["min_rr"]):
         vetoes.append("rr_below_minimum")
     distance = 0.0 if zone.low <= price <= zone.high else min(abs(price - zone.low), abs(price - zone.high))
     if distance > atr_1h * float(config["levels"]["max_distance_atr"]):

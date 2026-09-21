@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .backtest import run_backtest
+from .backtest import required_history_hours, run_backtest
 from .config import load_config
 from .data import build_market_data
 from .runner import run_once
@@ -17,7 +17,8 @@ from .runner import run_once
 def _backtest(days: int | None, output: str) -> None:
     config = load_config()
     requested_days = days or int(config["history"]["backtest_days"])
-    total_hours = requested_days * 24 + 48
+    max_holding_hours = int(config["risk"]["max_holding_hours"])
+    total_hours = required_history_hours(requested_days, max_holding_hours)
     end = pd.Timestamp.now(tz="UTC")
     start = end - pd.Timedelta(hours=total_hours)
     market = build_market_data(config)
@@ -36,11 +37,22 @@ def _backtest(days: int | None, output: str) -> None:
         writer.writeheader()
         for trade in trades:
             writer.writerow(asdict(trade))
-    print(json.dumps({"provider": market.last_provider, **summary}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "provider": market.last_provider,
+                "requested_days": requested_days,
+                "history_candles": len(frame),
+                **summary,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BTC Signal Core 0.1")
+    parser = argparse.ArgumentParser(description="BTC Signal Core 0.1.1")
     commands = parser.add_subparsers(dest="command", required=True)
     live = commands.add_parser("live", help="Evaluate the newest closed candles")
     live.add_argument("--dry-run", action="store_true", help="Do not store or notify")

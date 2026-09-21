@@ -8,6 +8,9 @@ import pandas as pd
 from .strategy import Decision, evaluate
 
 
+BACKTEST_WARMUP_HOURS = 24 * 210
+
+
 @dataclass
 class Trade:
     side: str
@@ -20,6 +23,14 @@ class Trade:
     score: int
     result: str
     r_multiple: float
+
+
+def required_history_hours(evaluation_days: int, max_holding_hours: int) -> int:
+    if evaluation_days <= 0:
+        raise ValueError("evaluation_days must be positive")
+    if max_holding_hours < 0:
+        raise ValueError("max_holding_hours must be non-negative")
+    return BACKTEST_WARMUP_HOURS + evaluation_days * 24 + max_holding_hours
 
 
 def resample(frame_1h: pd.DataFrame, rule: str) -> pd.DataFrame:
@@ -45,8 +56,13 @@ def _simulate(decision: Decision, future: pd.DataFrame, config: dict) -> Trade |
     if decision.side is None or decision.stop is None or decision.target_1 is None:
         return None
     entry = decision.price
-    risk = abs(entry - decision.stop)
-    if risk <= 0:
+    risk = entry - decision.stop if decision.side == "long" else decision.stop - entry
+    target_valid = (
+        decision.target_1 > entry
+        if decision.side == "long"
+        else decision.target_1 < entry
+    )
+    if risk <= 0 or not target_valid:
         return None
     max_hours = int(config["risk"]["max_holding_hours"])
     exit_price = float(future.iloc[min(len(future), max_hours) - 1]["close"])
@@ -88,7 +104,7 @@ def _simulate(decision: Decision, future: pd.DataFrame, config: dict) -> Trade |
 
 def run_backtest(frame_1h: pd.DataFrame, config: dict) -> tuple[list[Trade], dict]:
     trades: list[Trade] = []
-    warmup_hours = max(24 * 210, 24 * 60)
+    warmup_hours = BACKTEST_WARMUP_HOURS
     blocked_until: pd.Timestamp | None = None
     cooldown = pd.Timedelta(hours=int(config["signal"]["cooldown_hours"]))
     for i in range(warmup_hours, len(frame_1h) - int(config["risk"]["max_holding_hours"])):
