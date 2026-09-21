@@ -1,0 +1,100 @@
+# BTC Technical Signal Engine · Core 0.1
+
+Shadow-инструмент для BTCUSDT: **1D regime → 4H level zone → 1H confirmation → score → Telegram**.
+
+Это исследовательская система, а не финансовая рекомендация. Она не подключается к торговому аккаунту и не исполняет ордера.
+
+## Что уже реализовано
+
+- Binance Spot OHLCV без API-ключа, затем Bybit Spot и Binance.US как fallback;
+- все три таймфрейма одного расчёта всегда берутся с одной и той же биржи;
+- исключение незакрытой свечи;
+- EMA 50/200, RSI, ATR, относительный объём;
+- 4H swing-зоны с ATR-шириной и оценкой качества;
+- 1D режим, 4H структура, 1H реакция цены;
+- score 0–100 и hard veto;
+- состояния `neutral`, `watch`, `signal`, `strong_signal`;
+- Telegram, защита от повторной отправки;
+- cooldown между сигналами и запрет перекрывающихся виртуальных сделок;
+- локальный SQLite или Supabase;
+- исторический backtest с комиссиями, проскальзыванием и консервативным правилом внутри свечи;
+- HTTP endpoint для Supabase Cron/внешнего cron;
+- GitHub Actions: тесты и резервный почасовой shadow-run.
+
+## Быстрый локальный запуск
+
+```bash
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.lock
+pip install --no-deps -e .
+pytest -q
+btc-signal live --dry-run
+```
+
+Backtest:
+
+```bash
+btc-signal backtest --days 240
+```
+
+Результаты сделок появятся в `reports/backtest_trades.csv`, сводка — в терминале.
+
+## Telegram и Supabase
+
+1. Скопируйте `.env.example` в `.env` и заполните переменные в среде запуска.
+2. Выполните SQL из `supabase/migrations/0001_btc_signal.sql` в SQL Editor.
+3. Для серверного worker используйте `SUPABASE_SECRET_KEY=sb_secret_...`. Legacy service-role key тоже поддерживается, но Supabase выводит его из основного употребления. Не помещайте любой из этих ключей в браузерный код.
+4. Запустите `btc-signal live`. Если Supabase-переменные не заданы, автоматически используется локальный SQLite.
+
+## Основной режим размещения
+
+Соберите Docker-образ и разместите его на Render/Railway/Fly.io или другом сервисе, который принимает Dockerfile. Команда уже задана:
+
+```text
+uvicorn btc_signal.api:app --host 0.0.0.0 --port 8000
+```
+
+Проверка: `GET /health`.
+
+Планировщик должен выполнять `POST /run` с заголовком:
+
+```text
+X-Cron-Secret: значение CRON_SECRET
+```
+
+Для стратегии с 1H-триггером достаточно запуска на 5–10-й минуте каждого часа. В Supabase Cron это можно настроить через Dashboard → Integrations → Cron → HTTP request. Резервный workflow `.github/workflows/shadow.yml` запускается в 07 минут каждого часа.
+
+## Логика score
+
+| Блок | Максимум |
+|---|---:|
+| Качество уровня | 30 |
+| 1D regime | 20 |
+| 4H structure | 15 |
+| 1H price action | 15 |
+| Volume | 10 |
+| RSI momentum | 5 |
+| ATR volatility | 5 |
+
+Пороги по умолчанию: WATCH 65, SIGNAL 75, STRONG 85. Все параметры находятся в `config/strategy.yaml`.
+
+Hard veto блокирует сигнал, если нет качественной 4H-зоны, направление конфликтует с 1D, R/R ниже 1.8 или цена уже ушла от зоны.
+
+## Правильный порядок проверки
+
+1. Запустить unit-тесты.
+2. Выполнить backtest минимум на 240 днях.
+3. Проверить распределение сделок по режимам рынка, а не только общий win rate.
+4. Включить shadow Telegram минимум на 4–8 недель.
+5. Не подключать исполнение ордеров, пока выборка не станет статистически полезной и положительная expectancy не сохранится вне периода настройки.
+
+## Важные ограничения Core 0.1
+
+- Уровни строятся алгоритмически и требуют калибровки на реальных данных.
+- Резервные биржи могут иметь немного другие свечи и объёмы; имя фактического источника записывается в каждый сигнал.
+- Backtest работает по 1H OHLCV: если стоп и цель затронуты одной свечой, засчитывается стоп.
+- Незавершённые 4H/1D агрегаты не участвуют в backtest, чтобы не было скрытого look-ahead/repainting.
+- Funding, open interest, ликвидации и стакан пока не используются.
+- Целевые 1–3 сделки в сутки не гарантируются: частоту нельзя повышать ценой качества. Фактическую частоту покажет backtest/shadow-журнал.
+- Для серьёзной оценки нужен walk-forward/out-of-sample анализ; он запланирован для Core 0.2.

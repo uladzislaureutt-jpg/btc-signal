@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools==75.6.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "btc-signal-core"
+version = "0.1.0"
+description = "Level-first BTCUSDT technical signal engine"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "fastapi==0.115.5",
+  "numpy==2.1.3",
+  "pandas==2.2.3",
+  "python-dotenv==1.0.1",
+  "PyYAML==6.0.2",
+  "requests==2.32.3",
+  "uvicorn==0.32.1",
+]
+
+[project.optional-dependencies]
+dev = ["httpx==0.28.1", "pytest==8.3.4"]
+
+[project.scripts]
+btc-signal = "btc_signal.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
