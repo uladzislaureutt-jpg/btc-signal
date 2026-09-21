@@ -7,6 +7,11 @@ on:
         description: Evaluation period in days (warmup is added separately)
         required: true
         default: "240"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/backtest-trigger"
 
 permissions:
   contents: read
@@ -24,9 +29,11 @@ jobs:
       - run: pip install -r requirements.lock
       - run: pip install --no-deps .
       - name: Run historical backtest
+        env:
+          BACKTEST_DAYS: "${{ inputs.days || '240' }}"
         run: |
           mkdir -p reports
-          btc-signal backtest --days "${{ inputs.days }}" --output reports/backtest_trades.csv | tee reports/backtest_summary.json
+          btc-signal backtest --days "$BACKTEST_DAYS" --output reports/backtest_trades.csv | tee reports/backtest_summary.json
       - name: Publish backtest summary
         if: always()
         run: |
@@ -40,7 +47,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: btc-backtest-${{ inputs.days }}d-run-${{ github.run_number }}
+          name: btc-backtest-${{ inputs.days || '240' }}d-run-${{ github.run_number }}
           path: reports/
           if-no-files-found: error
           retention-days: 30
