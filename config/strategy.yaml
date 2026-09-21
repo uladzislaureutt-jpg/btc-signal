@@ -1,0 +1,59 @@
+market:
+  symbol: BTCUSDT
+  sources:
+    - binance
+    - bybit
+    - binance_us
+  request_timeout_seconds: 20
+
+timeframes:
+  regime: 1d
+  setup: 4h
+  trigger: 1h
+
+history:
+  live_1h_bars: 1000
+  live_4h_bars: 800
+  live_1d_bars: 400
+  backtest_days: 240
+
+indicators:
+  ema_fast: 50
+  ema_slow: 200
+  ema_slope_bars: 5
+  rsi_period: 14
+  atr_period: 14
+  volume_median_period: 20
+
+levels:
+  swing_window: 3
+  lookback_bars: 240
+  atr_zone: 0.30
+  cluster_atr: 0.45
+  min_touches: 2
+  min_quality: 5
+  max_distance_atr: 0.80
+
+signal:
+  watch_score: 65
+  min_score: 75
+  strong_score: 85
+  cooldown_hours: 3
+  max_signal_age_minutes: 75
+
+risk:
+  stop_atr: 0.35
+  min_rr: 1.8
+  target_rr: 2.2
+  max_holding_hours: 48
+  fee_bps_round_trip: 20
+  slippage_bps_round_trip: 10
+
+weights:
+  level_quality: 30
+  regime: 20
+  structure_4h: 15
+  price_action_1h: 15
+  volume: 10
+  momentum: 5
+  volatility: 5
