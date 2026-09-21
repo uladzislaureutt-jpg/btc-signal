@@ -1,0 +1,32 @@
+name: BTC shadow signal
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "7 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: btc-shadow-signal
+  cancel-in-progress: false
+
+jobs:
+  signal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.lock
+      - run: pip install --no-deps .
+      - run: btc-signal live
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
