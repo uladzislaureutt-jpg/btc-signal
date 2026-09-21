@@ -1,0 +1,235 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import asdict, dataclass
+from typing import Literal
+
+import numpy as np
+import pandas as pd
+
+from .indicators import enrich
+from .levels import LevelZone, build_levels, nearest_zone
+
+
+Side = Literal["long", "short"]
+
+
+@dataclass
+class Decision:
+    timestamp: str
+    state: str
+    side: Side | None
+    score: int
+    price: float
+    entry_low: float | None
+    entry_high: float | None
+    stop: float | None
+    target_1: float | None
+    target_2: float | None
+    rr: float | None
+    regime: str
+    level: dict | None
+    factors: dict[str, dict[str, object]]
+    vetoes: list[str]
+    provider: str | None = None
+    strategy_version: str = "0.1.0"
+
+    @property
+    def dedup_key(self) -> str:
+        raw = json.dumps(
+            [self.timestamp, self.state, self.side, round(self.price, 2), self.level],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        data["dedup_key"] = self.dedup_key
+        return data
+
+
+def _regime(frame_1d: pd.DataFrame, config: dict) -> str:
+    slope_bars = int(config["indicators"]["ema_slope_bars"])
+    if len(frame_1d) < slope_bars + 2:
+        return "no_trade"
+    latest = frame_1d.iloc[-1]
+    previous = frame_1d.iloc[-1 - slope_bars]
+    values = [latest["close"], latest["ema_fast"], latest["ema_slow"], previous["ema_fast"]]
+    if not all(np.isfinite(value) for value in values):
+        return "no_trade"
+    bullish = latest["close"] > latest["ema_fast"] > latest["ema_slow"] and latest["ema_fast"] > previous["ema_fast"]
+    bearish = latest["close"] < latest["ema_fast"] < latest["ema_slow"] and latest["ema_fast"] < previous["ema_fast"]
+    if bullish:
+        return "long_allowed"
+    if bearish:
+        return "short_allowed"
+    return "both_allowed"
+
+
+def _structure(frame: pd.DataFrame) -> str:
+    if len(frame) < 7:
+        return "neutral"
+    recent = frame.tail(7)
+    first = recent.iloc[:3]
+    last = recent.iloc[-3:]
+    if last["high"].max() > first["high"].max() and last["low"].min() > first["low"].min():
+        return "bullish"
+    if last["high"].max() < first["high"].max() and last["low"].min() < first["low"].min():
+        return "bearish"
+    return "neutral"
+
+
+def _factor(value: object, passed: bool, points: int, maximum: int) -> dict[str, object]:
+    return {"value": value, "passed": passed, "points": points if passed else 0, "max": maximum}
+
+
+def _candidate(
+    side: Side,
+    regime: str,
+    structure_4h: str,
+    trigger: pd.DataFrame,
+    zone: LevelZone,
+    levels: list[LevelZone],
+    config: dict,
+) -> Decision:
+    latest = trigger.iloc[-1]
+    previous = trigger.iloc[-2]
+    weights = config["weights"]
+    price = float(latest["close"])
+    atr_1h = float(latest["atr"])
+    if side == "long":
+        price_action = latest["low"] <= zone.high and latest["close"] > zone.midpoint
+        momentum = latest["rsi"] > previous["rsi"] and latest["rsi"] < 70
+        aligned_regime = regime in ("long_allowed", "both_allowed")
+        aligned_structure = structure_4h in ("bullish", "neutral")
+        stop = zone.low - atr_1h * float(config["risk"]["stop_atr"])
+        entry_low, entry_high = zone.midpoint, max(zone.high, price)
+        risk = max(price - stop, atr_1h * 0.1)
+        opposing = sorted(
+            (item.midpoint for item in levels if item.side == "resistance" and item.midpoint > price)
+        )
+        target_1 = opposing[0] if opposing else price + risk * float(config["risk"]["target_rr"])
+        target_2 = opposing[1] if len(opposing) > 1 else price + risk * float(config["risk"]["target_rr"])
+    else:
+        price_action = latest["high"] >= zone.low and latest["close"] < zone.midpoint
+        momentum = latest["rsi"] < previous["rsi"] and latest["rsi"] > 30
+        aligned_regime = regime in ("short_allowed", "both_allowed")
+        aligned_structure = structure_4h in ("bearish", "neutral")
+        stop = zone.high + atr_1h * float(config["risk"]["stop_atr"])
+        entry_low, entry_high = min(zone.low, price), zone.midpoint
+        risk = max(stop - price, atr_1h * 0.1)
+        opposing = sorted(
+            (item.midpoint for item in levels if item.side == "support" and item.midpoint < price),
+            reverse=True,
+        )
+        target_1 = opposing[0] if opposing else price - risk * float(config["risk"]["target_rr"])
+        target_2 = opposing[1] if len(opposing) > 1 else price - risk * float(config["risk"]["target_rr"])
+    volume_ratio = float(latest["volume"] / latest["volume_median"]) if latest["volume_median"] else 0.0
+    volume_ok = volume_ratio >= 1.05
+    volatility_ratio = atr_1h / price if price else 0.0
+    volatility_ok = 0.002 <= volatility_ratio <= 0.035
+    level_points = round(int(weights["level_quality"]) * min(zone.quality, 10) / 10)
+    factors = {
+        "level_quality": {
+            "value": zone.quality,
+            "passed": zone.quality >= int(config["levels"]["min_quality"]),
+            "points": level_points,
+            "max": int(weights["level_quality"]),
+        },
+        "regime": _factor(regime, aligned_regime, int(weights["regime"]), int(weights["regime"])),
+        "structure_4h": _factor(structure_4h, aligned_structure, int(weights["structure_4h"]), int(weights["structure_4h"])),
+        "price_action_1h": _factor(bool(price_action), bool(price_action), int(weights["price_action_1h"]), int(weights["price_action_1h"])),
+        "volume": _factor(round(volume_ratio, 3), volume_ok, int(weights["volume"]), int(weights["volume"])),
+        "momentum": _factor(round(float(latest["rsi"]), 2), bool(momentum), int(weights["momentum"]), int(weights["momentum"])),
+        "volatility": _factor(round(volatility_ratio, 5), volatility_ok, int(weights["volatility"]), int(weights["volatility"])),
+    }
+    score = sum(int(item["points"]) for item in factors.values())
+    rr = abs(target_1 - price) / risk
+    vetoes: list[str] = []
+    if zone.quality < int(config["levels"]["min_quality"]):
+        vetoes.append("weak_level")
+    if not aligned_regime:
+        vetoes.append("daily_regime_conflict")
+    if rr < float(config["risk"]["min_rr"]):
+        vetoes.append("rr_below_minimum")
+    distance = 0.0 if zone.low <= price <= zone.high else min(abs(price - zone.low), abs(price - zone.high))
+    if distance > atr_1h * float(config["levels"]["max_distance_atr"]):
+        vetoes.append("late_entry")
+    if vetoes:
+        state = "neutral"
+    elif score >= int(config["signal"]["strong_score"]):
+        state = "strong_signal"
+    elif score >= int(config["signal"]["min_score"]):
+        state = "signal"
+    elif score >= int(config["signal"]["watch_score"]):
+        state = "watch"
+    else:
+        state = "neutral"
+    return Decision(
+        timestamp=trigger.index[-1].isoformat(),
+        state=state,
+        side=side,
+        score=score,
+        price=price,
+        entry_low=float(entry_low),
+        entry_high=float(entry_high),
+        stop=float(stop),
+        target_1=float(target_1),
+        target_2=float(target_2),
+        rr=float(rr),
+        regime=regime,
+        level=zone.to_dict(),
+        factors=factors,
+        vetoes=vetoes,
+    )
+
+
+def evaluate(
+    frame_1d: pd.DataFrame,
+    frame_4h: pd.DataFrame,
+    frame_1h: pd.DataFrame,
+    config: dict,
+    provider: str | None = None,
+) -> Decision:
+    day = enrich(frame_1d, config)
+    setup = enrich(frame_4h, config)
+    trigger = enrich(frame_1h, config)
+    if min(len(day), len(setup), len(trigger)) < 20:
+        raise ValueError("Not enough closed candles")
+    regime = _regime(day, config)
+    structure_4h = _structure(setup)
+    levels = build_levels(setup, config)
+    latest = trigger.iloc[-1]
+    price = float(latest["close"])
+    max_distance = float(latest["atr"]) * float(config["levels"]["max_distance_atr"])
+    support = nearest_zone(levels, price, "support", max_distance)
+    resistance = nearest_zone(levels, price, "resistance", max_distance)
+    candidates: list[Decision] = []
+    if support:
+        candidates.append(_candidate("long", regime, structure_4h, trigger, support, levels, config))
+    if resistance:
+        candidates.append(_candidate("short", regime, structure_4h, trigger, resistance, levels, config))
+    if candidates:
+        decision = max(candidates, key=lambda item: item.score)
+        decision.provider = provider
+        return decision
+    return Decision(
+        timestamp=trigger.index[-1].isoformat(),
+        state="neutral",
+        side=None,
+        score=0,
+        price=price,
+        entry_low=None,
+        entry_high=None,
+        stop=None,
+        target_1=None,
+        target_2=None,
+        rr=None,
+        regime=regime,
+        level=None,
+        factors={},
+        vetoes=["no_nearby_4h_level"],
+        provider=provider,
+    )
