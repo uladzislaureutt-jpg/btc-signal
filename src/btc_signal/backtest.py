@@ -21,6 +21,16 @@ class Trade:
     stop: float
     target: float
     score: int
+    regime: str
+    rr: float
+    risk_pct: float
+    gross_r: float
+    cost_r: float
+    level_quality: int
+    price_action_ok: bool
+    volume_ok: bool
+    momentum_ok: bool
+    structure_ok: bool
     result: str
     r_multiple: float
 
@@ -87,7 +97,9 @@ def _simulate(decision: Decision, future: pd.DataFrame, config: dict) -> Trade |
         float(config["risk"]["fee_bps_round_trip"])
         + float(config["risk"]["slippage_bps_round_trip"])
     ) / 10_000
-    net_r = raw_r - costs * entry / risk
+    cost_r = costs * entry / risk
+    net_r = raw_r - cost_r
+    factors = decision.factors
     return Trade(
         side=decision.side,
         entry_time=decision.timestamp,
@@ -97,6 +109,16 @@ def _simulate(decision: Decision, future: pd.DataFrame, config: dict) -> Trade |
         stop=float(decision.stop),
         target=float(decision.target_1),
         score=decision.score,
+        regime=decision.regime,
+        rr=float(decision.rr or 0.0),
+        risk_pct=float(risk / entry) if entry else 0.0,
+        gross_r=float(raw_r),
+        cost_r=float(cost_r),
+        level_quality=int(factors.get("level_quality", {}).get("value", 0)),
+        price_action_ok=bool(factors.get("price_action_1h", {}).get("passed", False)),
+        volume_ok=bool(factors.get("volume", {}).get("passed", False)),
+        momentum_ok=bool(factors.get("momentum", {}).get("passed", False)),
+        structure_ok=bool(factors.get("structure_4h", {}).get("passed", False)),
         result=result,
         r_multiple=float(net_r),
     )
@@ -139,6 +161,10 @@ def run_backtest(frame_1h: pd.DataFrame, config: dict) -> tuple[list[Trade], dic
         "total_r": float(values.sum()) if len(values) else 0.0,
         "profit_factor": float(wins.sum() / abs(losses.sum())) if len(losses) and losses.sum() else None,
         "max_drawdown_r": float(drawdowns.min()) if len(drawdowns) else 0.0,
+        "gross_total_r": float(sum(trade.gross_r for trade in trades)),
+        "total_cost_r": float(sum(trade.cost_r for trade in trades)),
+        "average_cost_r": float(np.mean([trade.cost_r for trade in trades])) if trades else 0.0,
+        "average_risk_pct": float(np.mean([trade.risk_pct for trade in trades])) if trades else 0.0,
     }
     return trades, summary
 

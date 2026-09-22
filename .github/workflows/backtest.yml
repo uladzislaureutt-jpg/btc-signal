@@ -33,7 +33,7 @@ jobs:
           BACKTEST_DAYS: "${{ inputs.days || '240' }}"
         run: |
           mkdir -p reports
-          btc-signal backtest --days "$BACKTEST_DAYS" --output reports/backtest_trades.csv | tee reports/backtest_summary.json
+          btc-signal backtest --days "$BACKTEST_DAYS" --output reports/backtest_trades.csv --market-output reports/backtest_market_1h.csv | tee reports/backtest_summary.json
       - name: Publish backtest summary
         if: always()
         run: |

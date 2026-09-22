@@ -14,7 +14,7 @@ from .data import build_market_data
 from .runner import run_once
 
 
-def _backtest(days: int | None, output: str) -> None:
+def _backtest(days: int | None, output: str, market_output: str | None = None) -> None:
     config = load_config()
     requested_days = days or int(config["history"]["backtest_days"])
     max_holding_hours = int(config["risk"]["max_holding_hours"])
@@ -29,6 +29,10 @@ def _backtest(days: int | None, output: str) -> None:
         start_ms=int(start.timestamp() * 1000),
         end_ms=int(end.timestamp() * 1000),
     )
+    if market_output:
+        market_output_path = Path(market_output)
+        market_output_path.parent.mkdir(parents=True, exist_ok=True)
+        frame.to_csv(market_output_path, index_label="open_time")
     trades, summary = run_backtest(frame, config)
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,15 +64,15 @@ def main() -> None:
     backtest = commands.add_parser("backtest", help="Run a historical shadow test")
     backtest.add_argument("--days", type=int, default=None)
     backtest.add_argument("--output", default="reports/backtest_trades.csv")
+    backtest.add_argument("--market-output", default=None)
     args = parser.parse_args()
     if args.command == "live":
         result = run_once(dry_run=args.dry_run, notify_watch=not args.no_watch)
         print(json.dumps(result.decision.to_dict(), ensure_ascii=False, indent=2))
         print(json.dumps({"duplicate": result.duplicate, "notified": result.notified}))
     else:
-        _backtest(args.days, args.output)
+        _backtest(args.days, args.output, args.market_output)
 
 
 if __name__ == "__main__":
     main()
-
