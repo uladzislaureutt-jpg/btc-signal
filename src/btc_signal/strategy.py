@@ -33,7 +33,7 @@ class Decision:
     factors: dict[str, dict[str, object]]
     vetoes: list[str]
     provider: str | None = None
-    strategy_version: str = "0.1.1"
+    strategy_version: str = "0.1.2"
 
     @property
     def dedup_key(self) -> str:
@@ -138,7 +138,7 @@ def _candidate(
         target_1 = opposing[0] if opposing else price - risk * float(config["risk"]["target_rr"])
         target_2 = opposing[1] if len(opposing) > 1 else price - risk * float(config["risk"]["target_rr"])
     volume_ratio = float(latest["volume"] / latest["volume_median"]) if latest["volume_median"] else 0.0
-    volume_ok = volume_ratio >= 1.05
+    volume_ok = volume_ratio < float(config["signal"]["max_rejection_volume_ratio"])
     volatility_ratio = atr_1h / price if price else 0.0
     volatility_ok = 0.002 <= volatility_ratio <= 0.035
     level_points = round(int(weights["level_quality"]) * min(zone.quality, 10) / 10)
@@ -158,15 +158,28 @@ def _candidate(
     }
     score = sum(int(item["points"]) for item in factors.values())
     rr = abs(target_1 - price) / risk if stop_geometry_valid else 0.0
+    trading_cost = (
+        float(config["risk"]["fee_bps_round_trip"])
+        + float(config["risk"]["slippage_bps_round_trip"])
+    ) / 10_000
+    estimated_cost_r = trading_cost * price / risk if stop_geometry_valid else float("inf")
     vetoes: list[str] = []
     if zone.quality < int(config["levels"]["min_quality"]):
         vetoes.append("weak_level")
+    if zone.quality > int(config["levels"]["max_signal_quality"]):
+        vetoes.append("saturated_level")
     if not aligned_regime:
         vetoes.append("daily_regime_conflict")
+    if bool(config["signal"]["require_price_action"]) and not price_action:
+        vetoes.append("missing_price_action_confirmation")
+    if not volume_ok:
+        vetoes.append("breakout_volume_risk")
     if not stop_geometry_valid:
         vetoes.append("invalid_stop_geometry")
     elif rr < float(config["risk"]["min_rr"]):
         vetoes.append("rr_below_minimum")
+    elif estimated_cost_r > float(config["risk"]["max_cost_r"]):
+        vetoes.append("cost_above_limit")
     distance = 0.0 if zone.low <= price <= zone.high else min(abs(price - zone.low), abs(price - zone.high))
     if distance > atr_1h * float(config["levels"]["max_distance_atr"]):
         vetoes.append("late_entry")

@@ -32,6 +32,7 @@ levels:
   cluster_atr: 0.45
   min_touches: 2
   min_quality: 5
+  max_signal_quality: 9
   max_distance_atr: 0.80
 
 signal:
@@ -40,6 +41,8 @@ signal:
   strong_score: 85
   cooldown_hours: 3
   max_signal_age_minutes: 75
+  require_price_action: true
+  max_rejection_volume_ratio: 1.05
 
 risk:
   stop_atr: 0.35
@@ -48,12 +51,13 @@ risk:
   max_holding_hours: 48
   fee_bps_round_trip: 20
   slippage_bps_round_trip: 10
+  max_cost_r: 0.60
 
 weights:
   level_quality: 30
   regime: 20
   structure_4h: 15
   price_action_1h: 15
-  volume: 10
+  volume: 0
   momentum: 5
   volatility: 5

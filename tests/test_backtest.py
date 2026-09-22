@@ -12,7 +12,6 @@ def test_resample_excludes_incomplete_higher_timeframe_candle():
     assert result.index[0] == pd.Timestamp("2025-01-01 00:00:00+00:00")
 
 
-
 def test_240_day_backtest_adds_warmup_and_holding_window():
     assert required_history_hours(240, 48) == (210 + 240) * 24 + 48
 

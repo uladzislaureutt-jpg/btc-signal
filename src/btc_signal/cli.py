@@ -56,7 +56,7 @@ def _backtest(days: int | None, output: str, market_output: str | None = None) -
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BTC Signal Core 0.1.1")
+    parser = argparse.ArgumentParser(description="BTC Signal Core 0.1.2")
     commands = parser.add_subparsers(dest="command", required=True)
     live = commands.add_parser("live", help="Evaluate the newest closed candles")
     live.add_argument("--dry-run", action="store_true", help="Do not store or notify")
