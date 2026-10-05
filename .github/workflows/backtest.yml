@@ -1,4 +1,4 @@
-name: BTC 240-day backtest
+name: BTC historical backtest
 
 on:
   workflow_dispatch:
@@ -33,7 +33,13 @@ jobs:
           BACKTEST_DAYS: "${{ inputs.days || '240' }}"
         run: |
           mkdir -p reports
-          btc-signal backtest --days "$BACKTEST_DAYS" --output reports/backtest_trades.csv --market-output reports/backtest_market_1h.csv | tee reports/backtest_summary.json
+          btc-signal backtest \
+            --days "$BACKTEST_DAYS" \
+            --output reports/backtest_trades.csv \
+            --market-output reports/backtest_market_1h.csv \
+            --diagnostics-output reports/backtest_diagnostics.json \
+            --manifest-output reports/backtest_manifest.json \
+            | tee reports/backtest_summary.json
       - name: Publish backtest summary
         if: always()
         run: |

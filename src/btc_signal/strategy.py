@@ -33,7 +33,7 @@ class Decision:
     factors: dict[str, dict[str, object]]
     vetoes: list[str]
     provider: str | None = None
-    strategy_version: str = "0.1.2"
+    strategy_version: str = "0.1.3"
 
     @property
     def dedup_key(self) -> str:
@@ -48,6 +48,20 @@ class Decision:
         data = asdict(self)
         data["dedup_key"] = self.dedup_key
         return data
+
+
+@dataclass(frozen=True)
+class EvaluationTrace:
+    """Diagnostics emitted beside a decision without affecting signal selection."""
+
+    timestamp: str
+    price: float
+    atr: float
+    regime: str
+    structure_4h: str
+    level_count: int
+    closest_distance_atr: dict[str, float | None]
+    candidates: tuple[Decision, ...]
 
 
 def _regime(frame_1d: pd.DataFrame, config: dict) -> str:
@@ -86,14 +100,26 @@ def _factor(value: object, passed: bool, points: int, maximum: int) -> dict[str,
 
 
 def _risk_geometry(side: Side, price: float, stop: float, atr: float) -> tuple[float, bool]:
-    minimum_risk = (
-        atr * 0.1
-        if np.isfinite(atr) and atr > 0
-        else max(abs(price) * 1e-6, 1e-8)
-    )
+    minimum_risk = atr * 0.1 if np.isfinite(atr) and atr > 0 else max(abs(price) * 1e-6, 1e-8)
     raw_risk = price - stop if side == "long" else stop - price
     valid = bool(np.isfinite(raw_risk) and raw_risk >= minimum_risk)
     return (float(raw_risk) if valid else float(minimum_risk), valid)
+
+
+def _zone_distance(zone: LevelZone, price: float) -> float:
+    if zone.low <= price <= zone.high:
+        return 0.0
+    return min(abs(price - zone.low), abs(price - zone.high))
+
+
+def _closest_distance_atr(
+    levels: list[LevelZone], price: float, side: Side, atr: float
+) -> float | None:
+    candidates = [zone for zone in levels if zone.side == side]
+    if not candidates or not np.isfinite(atr) or atr <= 0:
+        return None
+    closest = min(candidates, key=lambda zone: abs(zone.midpoint - price))
+    return float(_zone_distance(closest, price) / atr)
 
 
 def _candidate(
@@ -118,9 +144,7 @@ def _candidate(
         stop = zone.low - atr_1h * float(config["risk"]["stop_atr"])
         entry_low, entry_high = zone.midpoint, max(zone.high, price)
         risk, stop_geometry_valid = _risk_geometry(side, price, stop, atr_1h)
-        opposing = sorted(
-            (item.midpoint for item in levels if item.side == "resistance" and item.midpoint > price)
-        )
+        opposing = sorted(item.midpoint for item in levels if item.side == "resistance" and item.midpoint > price)
         target_1 = opposing[0] if opposing else price + risk * float(config["risk"]["target_rr"])
         target_2 = opposing[1] if len(opposing) > 1 else price + risk * float(config["risk"]["target_rr"])
     else:
@@ -180,7 +204,7 @@ def _candidate(
         vetoes.append("rr_below_minimum")
     elif estimated_cost_r > float(config["risk"]["max_cost_r"]):
         vetoes.append("cost_above_limit")
-    distance = 0.0 if zone.low <= price <= zone.high else min(abs(price - zone.low), abs(price - zone.high))
+    distance = _zone_distance(zone, price)
     if distance > atr_1h * float(config["levels"]["max_distance_atr"]):
         vetoes.append("late_entry")
     if vetoes:
@@ -212,13 +236,13 @@ def _candidate(
     )
 
 
-def evaluate(
+def evaluate_with_trace(
     frame_1d: pd.DataFrame,
     frame_4h: pd.DataFrame,
     frame_1h: pd.DataFrame,
     config: dict,
     provider: str | None = None,
-) -> Decision:
+) -> tuple[Decision, EvaluationTrace]:
     day = enrich(frame_1d, config)
     setup = enrich(frame_4h, config)
     trigger = enrich(frame_1h, config)
@@ -229,7 +253,8 @@ def evaluate(
     levels = build_levels(setup, config)
     latest = trigger.iloc[-1]
     price = float(latest["close"])
-    max_distance = float(latest["atr"]) * float(config["levels"]["max_distance_atr"])
+    atr = float(latest["atr"])
+    max_distance = atr * float(config["levels"]["max_distance_atr"])
     support = nearest_zone(levels, price, "support", max_distance)
     resistance = nearest_zone(levels, price, "resistance", max_distance)
     candidates: list[Decision] = []
@@ -240,22 +265,47 @@ def evaluate(
     if candidates:
         decision = max(candidates, key=lambda item: item.score)
         decision.provider = provider
-        return decision
-    return Decision(
+    else:
+        decision = Decision(
+            timestamp=trigger.index[-1].isoformat(),
+            state="neutral",
+            side=None,
+            score=0,
+            price=price,
+            entry_low=None,
+            entry_high=None,
+            stop=None,
+            target_1=None,
+            target_2=None,
+            rr=None,
+            regime=regime,
+            level=None,
+            factors={},
+            vetoes=["no_nearby_4h_level"],
+            provider=provider,
+        )
+    trace = EvaluationTrace(
         timestamp=trigger.index[-1].isoformat(),
-        state="neutral",
-        side=None,
-        score=0,
         price=price,
-        entry_low=None,
-        entry_high=None,
-        stop=None,
-        target_1=None,
-        target_2=None,
-        rr=None,
+        atr=atr,
         regime=regime,
-        level=None,
-        factors={},
-        vetoes=["no_nearby_4h_level"],
-        provider=provider,
+        structure_4h=structure_4h,
+        level_count=len(levels),
+        closest_distance_atr={
+            "long": _closest_distance_atr(levels, price, "support", atr),
+            "short": _closest_distance_atr(levels, price, "resistance", atr),
+        },
+        candidates=tuple(candidates),
     )
+    return decision, trace
+
+
+def evaluate(
+    frame_1d: pd.DataFrame,
+    frame_4h: pd.DataFrame,
+    frame_1h: pd.DataFrame,
+    config: dict,
+    provider: str | None = None,
+) -> Decision:
+    decision, _ = evaluate_with_trace(frame_1d, frame_4h, frame_1h, config, provider)
+    return decision
