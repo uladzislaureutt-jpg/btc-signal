@@ -15,6 +15,7 @@ BACKTEST_WARMUP_HOURS = 24 * 210
 @dataclass
 class Trade:
     side: str
+    signal_time: str
     entry_time: str
     exit_time: str
     entry: float
@@ -34,6 +35,108 @@ class Trade:
     structure_ok: bool
     result: str
     r_multiple: float
+
+
+def audit_market_data(frame: pd.DataFrame, interval: str = "1h") -> dict:
+    """Report structural market-data defects without hiding exchange outages."""
+    required = {"open", "high", "low", "close", "volume", "close_time"}
+    errors: list[str] = []
+    warnings: list[str] = []
+    missing_columns = sorted(required.difference(frame.columns))
+    if missing_columns:
+        errors.append("missing_columns")
+        return {
+            "status": "error",
+            "errors": errors,
+            "warnings": warnings,
+            "missing_columns": missing_columns,
+        }
+    if not isinstance(frame.index, pd.DatetimeIndex):
+        errors.append("index_not_datetime")
+        return {
+            "status": "error",
+            "errors": errors,
+            "warnings": warnings,
+            "rows": len(frame),
+            "timezone": None,
+        }
+    elif frame.index.tz is None:
+        errors.append("index_not_timezone_aware")
+    elif str(frame.index.tz) != "UTC":
+        errors.append("index_not_utc")
+    duplicates = int(frame.index.duplicated().sum())
+    if duplicates:
+        errors.append("duplicate_open_times")
+    if not frame.index.is_monotonic_increasing:
+        errors.append("open_times_not_monotonic")
+    numeric = frame[["open", "high", "low", "close", "volume"]]
+    nan_cells = int(frame[list(required)].isna().sum().sum())
+    non_finite_cells = int((~np.isfinite(numeric.to_numpy(dtype=float))).sum())
+    invalid_ohlc = int(
+        (
+            (frame["low"] > frame[["open", "close"]].min(axis=1))
+            | (frame["high"] < frame[["open", "close"]].max(axis=1))
+            | (frame["low"] > frame["high"])
+        ).sum()
+    )
+    negative_volume = int((frame["volume"] < 0).sum())
+    nonpositive_price = int((frame[["open", "high", "low", "close"]] <= 0).any(axis=1).sum())
+    if nan_cells:
+        errors.append("missing_values")
+    if non_finite_cells:
+        errors.append("non_finite_numeric_values")
+    if invalid_ohlc:
+        errors.append("invalid_ohlc_geometry")
+    if negative_volume:
+        errors.append("negative_volume")
+    if nonpositive_price:
+        errors.append("nonpositive_price")
+
+    expected = pd.Timedelta(interval)
+    deltas = frame.index.to_series().diff().dropna() if isinstance(frame.index, pd.DatetimeIndex) else pd.Series(dtype="timedelta64[ns]")
+    gaps = deltas[deltas > expected]
+    overlaps = deltas[deltas < expected]
+    gap_details = []
+    if isinstance(frame.index, pd.DatetimeIndex):
+        for position in range(1, len(frame.index)):
+            delta = frame.index[position] - frame.index[position - 1]
+            if delta > expected:
+                gap_details.append({
+                    "after": frame.index[position - 1].isoformat(),
+                    "before": frame.index[position].isoformat(),
+                    "duration_hours": float(delta / pd.Timedelta(hours=1)),
+                    "estimated_missing_bars": max(int(round(delta / expected)) - 1, 0),
+                })
+    if len(gaps):
+        warnings.append("market_data_gaps")
+    if len(overlaps):
+        errors.append("sub_interval_or_overlapping_bars")
+    close_times = pd.to_datetime(frame["close_time"], utc=True)
+    durations = close_times.array - frame.index.array
+    expected_duration = expected - pd.Timedelta(milliseconds=1)
+    irregular_close_duration = int((durations != expected_duration).sum())
+    if irregular_close_duration:
+        warnings.append("irregular_candle_duration")
+    status = "error" if errors else ("warning" if warnings else "ok")
+    return {
+        "status": status,
+        "errors": errors,
+        "warnings": warnings,
+        "rows": len(frame),
+        "duplicate_open_times": duplicates,
+        "nan_cells": nan_cells,
+        "non_finite_numeric_cells": non_finite_cells,
+        "invalid_ohlc_rows": invalid_ohlc,
+        "negative_volume_rows": negative_volume,
+        "nonpositive_price_rows": nonpositive_price,
+        "gap_count": int(len(gaps)),
+        "estimated_missing_bars": int(sum(item["estimated_missing_bars"] for item in gap_details)),
+        "gaps": gap_details[:20],
+        "sub_interval_or_overlapping_bars": int(len(overlaps)),
+        "irregular_candle_duration_rows": irregular_close_duration,
+        "expected_interval": interval,
+        "timezone": str(frame.index.tz) if isinstance(frame.index, pd.DatetimeIndex) else None,
+    }
 
 
 def required_history_hours(evaluation_days: int, max_holding_hours: int) -> int:
@@ -58,47 +161,102 @@ def resample(frame_1h: pd.DataFrame, rule: str) -> pd.DataFrame:
     aggregated = aggregated.dropna(subset=["open", "close"])
     if frame_1h.empty:
         return aggregated
-    cutoff = frame_1h["close_time"].iloc[-1] + pd.Timedelta(milliseconds=1)
     duration = pd.Timedelta(rule)
-    return aggregated.loc[aggregated.index + duration <= cutoff]
+    base_interval = pd.Timedelta(hours=1)
+    expected_bars = int(duration / base_interval)
+    counts = frame_1h["open"].resample(rule, label="left", closed="left").count()
+    complete_groups = counts[counts == expected_bars].index
+    cutoff = frame_1h["close_time"].iloc[-1] + pd.Timedelta(milliseconds=1)
+    return aggregated.loc[
+        aggregated.index.isin(complete_groups) & (aggregated.index + duration <= cutoff)
+    ]
 
 
-def _simulate(decision: Decision, future: pd.DataFrame, config: dict) -> Trade | None:
+def _execution_rejection_reason(decision: Decision, future: pd.DataFrame, config: dict) -> str | None:
     if decision.side is None or decision.stop is None or decision.target_1 is None:
-        return None
-    entry = decision.price
+        return "missing_trade_geometry"
+    if future.empty:
+        return "no_next_candle"
+    entry = float(future.iloc[0]["open"])
     risk = entry - decision.stop if decision.side == "long" else decision.stop - entry
     target_valid = decision.target_1 > entry if decision.side == "long" else decision.target_1 < entry
-    if risk <= 0 or not target_valid:
+    if risk <= 0:
+        return "invalid_stop_at_next_open"
+    if not target_valid:
+        return "target_crossed_before_entry"
+    actual_rr = abs(decision.target_1 - entry) / risk
+    if actual_rr < float(config["risk"]["min_rr"]):
+        return "rr_below_minimum_at_next_open"
+    costs = (
+        float(config["risk"]["fee_bps_round_trip"])
+        + float(config["risk"]["slippage_bps_round_trip"])
+    ) / 10_000
+    if costs * entry / risk > float(config["risk"]["max_cost_r"]):
+        return "cost_above_limit_at_next_open"
+    return None
+
+
+def _bar_close_time(timestamp: pd.Timestamp, candle: pd.Series) -> pd.Timestamp:
+    value = candle.get("close_time")
+    return pd.Timestamp(value) if value is not None and not pd.isna(value) else timestamp + pd.Timedelta(hours=1)
+
+
+def _simulate(
+    decision: Decision,
+    future: pd.DataFrame,
+    config: dict,
+    signal_time: str | None = None,
+) -> Trade | None:
+    if _execution_rejection_reason(decision, future, config) is not None:
         return None
+    entry = float(future.iloc[0]["open"])
+    entry_time = future.index[0]
+    risk = entry - decision.stop if decision.side == "long" else decision.stop - entry
+    actual_rr = abs(float(decision.target_1) - entry) / risk
     max_hours = int(config["risk"]["max_holding_hours"])
-    exit_price = float(future.iloc[min(len(future), max_hours) - 1]["close"])
-    exit_time = future.index[min(len(future), max_hours) - 1]
+    last_position = min(len(future), max_hours) - 1
+    last_candle = future.iloc[last_position]
+    exit_price = float(last_candle["close"])
+    exit_time = _bar_close_time(future.index[last_position], last_candle)
     result = "timeout"
-    for timestamp, candle in future.head(max_hours).iterrows():
+    for bar_number, (timestamp, candle) in enumerate(future.head(max_hours).iterrows()):
+        candle_open = float(candle["open"])
         if decision.side == "long":
+            if bar_number and candle_open <= decision.stop:
+                exit_price, exit_time, result = candle_open, _bar_close_time(timestamp, candle), "gap_stop"
+                break
+            if bar_number and candle_open >= decision.target_1:
+                exit_price, exit_time, result = candle_open, _bar_close_time(timestamp, candle), "gap_target"
+                break
             stop_hit = candle["low"] <= decision.stop
             target_hit = candle["high"] >= decision.target_1
         else:
+            if bar_number and candle_open >= decision.stop:
+                exit_price, exit_time, result = candle_open, _bar_close_time(timestamp, candle), "gap_stop"
+                break
+            if bar_number and candle_open <= decision.target_1:
+                exit_price, exit_time, result = candle_open, _bar_close_time(timestamp, candle), "gap_target"
+                break
             stop_hit = candle["high"] >= decision.stop
             target_hit = candle["low"] <= decision.target_1
         if stop_hit:
-            exit_price, exit_time, result = decision.stop, timestamp, "stop"
+            exit_price, exit_time, result = decision.stop, _bar_close_time(timestamp, candle), "stop"
             break
         if target_hit:
-            exit_price, exit_time, result = decision.target_1, timestamp, "target"
+            exit_price, exit_time, result = decision.target_1, _bar_close_time(timestamp, candle), "target"
             break
     raw_r = (exit_price - entry) / risk if decision.side == "long" else (entry - exit_price) / risk
     costs = (
         float(config["risk"]["fee_bps_round_trip"])
         + float(config["risk"]["slippage_bps_round_trip"])
     ) / 10_000
-    cost_r = costs * entry / risk
+    cost_r = costs * ((entry + float(exit_price)) / 2) / risk
     net_r = raw_r - cost_r
     factors = decision.factors
     return Trade(
         side=decision.side,
-        entry_time=decision.timestamp,
+        signal_time=signal_time or decision.timestamp,
+        entry_time=entry_time.isoformat(),
         exit_time=exit_time.isoformat(),
         entry=entry,
         exit=float(exit_price),
@@ -106,7 +264,7 @@ def _simulate(decision: Decision, future: pd.DataFrame, config: dict) -> Trade |
         target=float(decision.target_1),
         score=decision.score,
         regime=decision.regime,
-        rr=float(decision.rr or 0.0),
+        rr=float(actual_rr),
         risk_pct=float(risk / entry) if entry else 0.0,
         gross_r=float(raw_r),
         cost_r=float(cost_r),
@@ -141,6 +299,13 @@ def _counterfactual_summary(trades: list[Trade]) -> dict:
         "expectancy_r": float(values.mean()) if len(values) else 0.0,
         "total_r": float(values.sum()) if len(values) else 0.0,
     }
+
+
+def _trade_breakdown(trades: list[Trade], attribute: str) -> dict:
+    groups: dict[str, list[Trade]] = defaultdict(list)
+    for trade in trades:
+        groups[str(getattr(trade, attribute))].append(trade)
+    return {name: _counterfactual_summary(items) for name, items in sorted(groups.items())}
 
 
 def _record_trace(
@@ -206,6 +371,7 @@ def _new_diagnostics() -> dict:
         "distance_missing": Counter(),
         "distance_threshold": 0.0,
         "counterfactuals": defaultdict(list),
+        "execution_rejections": Counter(),
     }
 
 
@@ -247,10 +413,14 @@ def _finalize_diagnostics(raw: dict) -> dict:
             reason: _counterfactual_summary(trades)
             for reason, trades in sorted(raw["counterfactuals"].items())
         },
+        "execution_rejections": dict(raw["execution_rejections"].most_common()),
     }
 
 
 def run_backtest(frame_1h: pd.DataFrame, config: dict) -> tuple[list[Trade], dict]:
+    data_quality = audit_market_data(frame_1h)
+    if data_quality["status"] == "error":
+        raise ValueError(f"Invalid market data: {', '.join(data_quality['errors'])}")
     trades: list[Trade] = []
     diagnostics = _new_diagnostics()
     warmup_hours = BACKTEST_WARMUP_HOURS
@@ -261,6 +431,7 @@ def run_backtest(frame_1h: pd.DataFrame, config: dict) -> tuple[list[Trade], dic
     for i in range(warmup_hours, len(frame_1h) - max_holding):
         history_1h = frame_1h.iloc[: i + 1]
         timestamp = history_1h.index[-1]
+        evaluation_time = pd.Timestamp(history_1h["close_time"].iloc[-1])
         history_4h = resample(history_1h, "4h")
         history_1d = resample(history_1h, "1D")
         try:
@@ -281,8 +452,8 @@ def run_backtest(frame_1h: pd.DataFrame, config: dict) -> tuple[list[Trade], dic
         future = frame_1h.iloc[i + 1 :]
         _record_trace(trace, future, config, diagnostics)
 
-        position_blocked = position_until is not None and timestamp < position_until
-        cooldown_blocked = cooldown_until is not None and timestamp < cooldown_until
+        position_blocked = position_until is not None and evaluation_time < position_until
+        cooldown_blocked = cooldown_until is not None and evaluation_time < cooldown_until
         if position_blocked or cooldown_blocked:
             diagnostics["blocked_hours"] += 1
             reason = "position_and_cooldown" if position_blocked and cooldown_blocked else (
@@ -294,11 +465,15 @@ def run_backtest(frame_1h: pd.DataFrame, config: dict) -> tuple[list[Trade], dic
             continue
         if decision.state not in ("signal", "strong_signal"):
             continue
-        trade = _simulate(decision, future, config)
+        rejection = _execution_rejection_reason(decision, future, config)
+        if rejection:
+            diagnostics["execution_rejections"][rejection] += 1
+            continue
+        trade = _simulate(decision, future, config, signal_time=evaluation_time.isoformat())
         if trade:
             trades.append(trade)
             position_until = pd.Timestamp(trade.exit_time)
-            cooldown_until = timestamp + cooldown
+            cooldown_until = pd.Timestamp(trade.entry_time) + cooldown
     values = np.array([trade.r_multiple for trade in trades], dtype=float)
     wins = values[values > 0]
     losses = values[values <= 0]
@@ -316,6 +491,13 @@ def run_backtest(frame_1h: pd.DataFrame, config: dict) -> tuple[list[Trade], dic
         "total_cost_r": float(sum(trade.cost_r for trade in trades)),
         "average_cost_r": float(np.mean([trade.cost_r for trade in trades])) if trades else 0.0,
         "average_risk_pct": float(np.mean([trade.risk_pct for trade in trades])) if trades else 0.0,
+        "execution_model": "signal_on_close_entry_at_next_1h_open",
+        "intrabar_collision_rule": "stop_first",
+        "funding_model": "not_applicable_spot",
+        "higher_timeframe_partial_bar_policy": "exclude_groups_missing_any_1h_bar",
+        "data_quality": data_quality,
+        "by_side": _trade_breakdown(trades, "side"),
+        "by_regime": _trade_breakdown(trades, "regime"),
         "diagnostics": _finalize_diagnostics(diagnostics),
     }
     return trades, summary

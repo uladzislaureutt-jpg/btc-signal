@@ -78,7 +78,7 @@ def _backtest(
     diagnostics_path = _write_json(diagnostics_output, diagnostics)
     evaluation_end_index = len(frame) - max_holding_hours - 1
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "strategy_version": __version__,
         "commit_sha": os.getenv("GITHUB_SHA"),
         "provider": market.last_provider,
@@ -97,6 +97,12 @@ def _backtest(
         "trades_sha256": _sha256_file(output_path),
         "config_sha256": _sha256_json(config),
         "diagnostics_file": diagnostics_path.name,
+        "execution_model": summary["execution_model"],
+        "intrabar_collision_rule": summary["intrabar_collision_rule"],
+        "funding_model": summary["funding_model"],
+        "higher_timeframe_partial_bar_policy": summary["higher_timeframe_partial_bar_policy"],
+        "data_quality_status": summary["data_quality"]["status"],
+        "data_quality_warnings": summary["data_quality"]["warnings"],
     }
     manifest_path = _write_json(manifest_output, manifest)
     print(json.dumps({
@@ -111,7 +117,7 @@ def _backtest(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BTC Signal Core 0.1.3")
+    parser = argparse.ArgumentParser(description="BTC Signal Core 0.1.4")
     commands = parser.add_subparsers(dest="command", required=True)
     live = commands.add_parser("live", help="Evaluate the newest closed candles")
     live.add_argument("--dry-run", action="store_true", help="Do not store or notify")
