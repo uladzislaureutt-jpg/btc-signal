@@ -33,7 +33,7 @@ class Decision:
     factors: dict[str, dict[str, object]]
     vetoes: list[str]
     provider: str | None = None
-    strategy_version: str = "0.1.5"
+    strategy_version: str = "0.1.6"
 
     @property
     def dedup_key(self) -> str:
@@ -246,6 +246,23 @@ def evaluate_with_trace(
     day = enrich(frame_1d, config)
     setup = enrich(frame_4h, config)
     trigger = enrich(frame_1h, config)
+    return evaluate_enriched_with_trace(day, setup, trigger, config, provider)
+
+
+def evaluate_enriched_with_trace(
+    day: pd.DataFrame,
+    setup: pd.DataFrame,
+    trigger: pd.DataFrame,
+    config: dict,
+    provider: str | None = None,
+) -> tuple[Decision, EvaluationTrace]:
+    """Evaluate already-enriched causal frames.
+
+    Backtests call this path after calculating rolling indicators once for the
+    complete history. All indicators used by ``enrich`` are backward-looking,
+    so slicing the precomputed frames at an evaluation timestamp is equivalent
+    to recalculating them for every historical hour.
+    """
     if min(len(day), len(setup), len(trigger)) < 20:
         raise ValueError("Not enough closed candles")
     regime = _regime(day, config)

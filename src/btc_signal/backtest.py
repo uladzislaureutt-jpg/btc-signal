@@ -6,7 +6,8 @@ from dataclasses import asdict, dataclass
 import numpy as np
 import pandas as pd
 
-from .strategy import Decision, EvaluationTrace, evaluate_with_trace
+from .indicators import enrich
+from .strategy import Decision, EvaluationTrace, evaluate_enriched_with_trace
 from .validation import (
     fixed_walk_forward,
     moving_block_bootstrap,
@@ -417,6 +418,17 @@ def _finalize_diagnostics(raw: dict) -> dict:
     }
 
 
+def prepare_backtest_frames(
+    frame_1h: pd.DataFrame, config: dict
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Calculate causal indicators once for fast historical evaluation."""
+    return (
+        enrich(frame_1h, config),
+        enrich(resample(frame_1h, "4h"), config),
+        enrich(resample(frame_1h, "1D"), config),
+    )
+
+
 def run_backtest(frame_1h: pd.DataFrame, config: dict) -> tuple[list[Trade], dict]:
     data_quality = audit_market_data(frame_1h)
     if data_quality["status"] == "error":
@@ -428,14 +440,15 @@ def run_backtest(frame_1h: pd.DataFrame, config: dict) -> tuple[list[Trade], dic
     cooldown_until: pd.Timestamp | None = None
     cooldown = pd.Timedelta(hours=int(config["signal"]["cooldown_hours"]))
     max_holding = int(config["risk"]["max_holding_hours"])
+    enriched_1h, enriched_4h, enriched_1d = prepare_backtest_frames(frame_1h, config)
     for i in range(warmup_hours, len(frame_1h) - max_holding):
-        history_1h = frame_1h.iloc[: i + 1]
+        history_1h = enriched_1h.iloc[: i + 1]
         timestamp = history_1h.index[-1]
         evaluation_time = pd.Timestamp(history_1h["close_time"].iloc[-1])
-        history_4h = resample(history_1h, "4h")
-        history_1d = resample(history_1h, "1D")
+        history_4h = enriched_4h.loc[enriched_4h["close_time"] <= evaluation_time]
+        history_1d = enriched_1d.loc[enriched_1d["close_time"] <= evaluation_time]
         try:
-            decision, trace = evaluate_with_trace(
+            decision, trace = evaluate_enriched_with_trace(
                 history_1d, history_4h, history_1h, config, "historical"
             )
         except ValueError:

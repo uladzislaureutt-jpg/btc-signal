@@ -136,7 +136,7 @@ def fixed_walk_forward(
     nonempty_tests = sum(1 for window in windows if window["test"]["trades"] > 0)
     return {
         "method": "fixed_parameter_rolling_walk_forward",
-        "note": "No parameters are selected on train windows; tuning walk-forward follows after sensitivity analysis.",
+        "note": "No parameters are selected on train windows; tuning remains disabled unless sensitivity finds a robust positive region.",
         "train_days": train_days,
         "test_days": test_days,
         "windows": windows,

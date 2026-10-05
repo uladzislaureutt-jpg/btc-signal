@@ -1,7 +1,8 @@
 from collections import Counter, defaultdict
 
 from btc_signal.backtest import _finalize_diagnostics, _new_diagnostics
-from btc_signal.strategy import evaluate, evaluate_with_trace
+from btc_signal.indicators import enrich
+from btc_signal.strategy import evaluate, evaluate_enriched_with_trace, evaluate_with_trace
 from conftest import candles, config
 
 
@@ -17,6 +18,21 @@ def test_evaluate_with_trace_preserves_public_decision():
     assert public.to_dict() == traced.to_dict()
     assert trace.timestamp == public.timestamp
     assert trace.price == public.price
+
+
+def test_enriched_evaluation_matches_public_evaluation():
+    cfg = config()
+    frames = (
+        candles(300, freq="1d", trend=1.0),
+        candles(500, freq="4h", trend=1.0),
+        candles(1000, freq="1h", trend=1.0),
+    )
+    expected, expected_trace = evaluate_with_trace(*frames, cfg, "test")
+    actual, actual_trace = evaluate_enriched_with_trace(
+        *(enrich(frame, cfg) for frame in frames), cfg, "test"
+    )
+    assert actual.to_dict() == expected.to_dict()
+    assert actual_trace == expected_trace
 
 
 def test_empty_diagnostic_funnel_is_json_ready():

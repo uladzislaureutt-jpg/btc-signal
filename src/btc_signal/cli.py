@@ -15,6 +15,7 @@ from .backtest import BACKTEST_WARMUP_HOURS, required_history_hours, run_backtes
 from .config import load_config
 from .data import build_market_data
 from .runner import run_once
+from .sensitivity import run_sensitivity, verify_baseline
 
 
 def _sha256_file(path: Path) -> str:
@@ -122,8 +123,28 @@ def _backtest(
     }, ensure_ascii=False, indent=2))
 
 
+def _sensitivity(
+    market_input: str,
+    output: str,
+    baseline_summary: str | None = None,
+) -> None:
+    config = load_config()
+    frame = pd.read_csv(market_input)
+    frame["open_time"] = pd.to_datetime(frame["open_time"], utc=True, format="mixed")
+    frame["close_time"] = pd.to_datetime(frame["close_time"], utc=True, format="mixed")
+    frame = frame.set_index("open_time")
+    result = run_sensitivity(frame, config)
+    if baseline_summary:
+        expected = json.loads(Path(baseline_summary).read_text(encoding="utf-8"))
+        result["baseline_verification"] = verify_baseline(expected, result)
+    output_path = _write_json(output, result)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if result.get("baseline_verification", {}).get("status") == "failed":
+        raise RuntimeError(f"Sensitivity replay differs from baseline; inspect {output_path}")
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BTC Signal Core 0.1.5")
+    parser = argparse.ArgumentParser(description="BTC Signal Core 0.1.6")
     commands = parser.add_subparsers(dest="command", required=True)
     live = commands.add_parser("live", help="Evaluate the newest closed candles")
     live.add_argument("--dry-run", action="store_true", help="Do not store or notify")
@@ -134,12 +155,22 @@ def main() -> None:
     backtest.add_argument("--market-output", default=None)
     backtest.add_argument("--diagnostics-output", default="reports/backtest_diagnostics.json")
     backtest.add_argument("--manifest-output", default="reports/backtest_manifest.json")
+    sensitivity = commands.add_parser(
+        "sensitivity", help="Run one-at-a-time parameter robustness analysis"
+    )
+    sensitivity.add_argument(
+        "--market-input", default="reports/backtest_market_1h.csv"
+    )
+    sensitivity.add_argument(
+        "--output", default="reports/backtest_sensitivity.json"
+    )
+    sensitivity.add_argument("--baseline-summary", default=None)
     args = parser.parse_args()
     if args.command == "live":
         result = run_once(dry_run=args.dry_run, notify_watch=not args.no_watch)
         print(json.dumps(result.decision.to_dict(), ensure_ascii=False, indent=2))
         print(json.dumps({"duplicate": result.duplicate, "notified": result.notified}))
-    else:
+    elif args.command == "backtest":
         _backtest(
             args.days,
             args.output,
@@ -147,6 +178,8 @@ def main() -> None:
             args.diagnostics_output,
             args.manifest_output,
         )
+    else:
+        _sensitivity(args.market_input, args.output, args.baseline_summary)
 
 
 if __name__ == "__main__":

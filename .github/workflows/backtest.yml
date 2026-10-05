@@ -40,6 +40,13 @@ jobs:
             --diagnostics-output reports/backtest_diagnostics.json \
             --manifest-output reports/backtest_manifest.json \
             | tee reports/backtest_summary.json
+      - name: Run parameter sensitivity
+        run: |
+          btc-signal sensitivity \
+            --market-input reports/backtest_market_1h.csv \
+            --baseline-summary reports/backtest_summary.json \
+            --output reports/backtest_sensitivity.json \
+            > /dev/null
       - name: Publish backtest summary
         if: always()
         run: |
@@ -47,6 +54,15 @@ jobs:
             echo '### BTC backtest summary' >> "$GITHUB_STEP_SUMMARY"
             echo '```json' >> "$GITHUB_STEP_SUMMARY"
             cat reports/backtest_summary.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Publish sensitivity summary
+        if: always()
+        run: |
+          if [ -f reports/backtest_sensitivity.json ]; then
+            echo '### Parameter sensitivity' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            jq '{method, scenario_count, positive_expectancy_scenarios, baseline_verification, scenarios: [.scenarios[] | {label, trades, total_r, expectancy_r, profit_factor, max_drawdown_r}]}' reports/backtest_sensitivity.json >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Upload backtest reports
