@@ -14,8 +14,15 @@ from . import __version__
 from .backtest import BACKTEST_WARMUP_HOURS, required_history_hours, run_backtest
 from .config import load_config
 from .data import build_market_data
+from .historical_data import download_monthly_klines
 from .runner import run_once
 from .sensitivity import run_sensitivity, verify_baseline
+from .trend import (
+    parameters_from_config,
+    run_trend_backtest,
+    run_trend_sensitivity,
+    trades_as_dicts as trend_trades_as_dicts,
+)
 
 
 def _sha256_file(path: Path) -> str:
@@ -143,8 +150,102 @@ def _sensitivity(
         raise RuntimeError(f"Sensitivity replay differs from baseline; inspect {output_path}")
 
 
+def _trend_backtest(
+    evaluation_start: str,
+    evaluation_end: str,
+    archive_start: str,
+    archive_end: str,
+    reports_dir: str,
+    cache_dir: str,
+) -> None:
+    config = load_config()
+    output_dir = Path(reports_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frame, sources = download_monthly_klines(
+        symbol=config["market"]["symbol"],
+        interval="1h",
+        start_month=archive_start,
+        end_month=archive_end,
+        cache_dir=cache_dir,
+    )
+    market_path = output_dir / f"btc_1h_{archive_start}_{archive_end}.csv"
+    frame.to_csv(market_path, index_label="open_time")
+    params = parameters_from_config(config)
+    trades, summary = run_trend_backtest(
+        frame,
+        evaluation_start=evaluation_start,
+        evaluation_end=evaluation_end,
+        params=params,
+    )
+    trades_path = output_dir / "trend_trades_2020_2023.csv"
+    trade_rows = trend_trades_as_dicts(trades)
+    with trades_path.open("w", encoding="utf-8", newline="") as handle:
+        fieldnames = list(trade_rows[0]) if trade_rows else ["no_trades"]
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(trade_rows)
+    summary_path = _write_json(str(output_dir / "trend_summary.json"), summary)
+    sensitivity = run_trend_sensitivity(
+        frame,
+        evaluation_start=evaluation_start,
+        evaluation_end=evaluation_end,
+        base=params,
+    )
+    replay = sensitivity["primary_replay"]
+    sensitivity["primary_verification"] = {
+        "status": "passed" if (
+            replay["trades"] == summary["trades"]
+            and abs(replay["total_r"] - summary["total_r"]) < 1e-12
+            and abs(replay["gross_total_r"] - summary["gross_total_r"]) < 1e-12
+        ) else "failed",
+        "expected_trades": summary["trades"],
+        "replayed_trades": replay["trades"],
+        "total_r_delta": replay["total_r"] - summary["total_r"],
+        "gross_total_r_delta": replay["gross_total_r"] - summary["gross_total_r"],
+    }
+    sensitivity_path = _write_json(
+        str(output_dir / "trend_sensitivity.json"), sensitivity
+    )
+    manifest = {
+        "schema_version": 1,
+        "research_release": __version__,
+        "commit_sha": os.getenv("GITHUB_SHA"),
+        "instrument": "Binance spot BTCUSDT",
+        "source": "official Binance public monthly kline archives",
+        "archive_start": archive_start,
+        "archive_end": archive_end,
+        "evaluation_start": pd.Timestamp(evaluation_start).isoformat(),
+        "evaluation_end_exclusive": pd.Timestamp(evaluation_end).isoformat(),
+        "parameter_selection_policy": "frozen_before_holdout; sensitivity is descriptive and must not select a replacement",
+        "primary_parameters": summary["parameters"],
+        "source_archives": sources,
+        "market_data_sha256": _sha256_file(market_path),
+        "trades_sha256": _sha256_file(trades_path),
+        "summary_sha256": _sha256_file(summary_path),
+        "sensitivity_sha256": _sha256_file(sensitivity_path),
+        "config_sha256": _sha256_json(config),
+    }
+    manifest_path = _write_json(str(output_dir / "trend_manifest.json"), manifest)
+    print(json.dumps({
+        "research_release": __version__,
+        "manifest_file": manifest_path.name,
+        "summary_file": summary_path.name,
+        "sensitivity_file": sensitivity_path.name,
+        "source_archive_count": len(sources),
+        "holdout_policy": manifest["parameter_selection_policy"],
+        **summary,
+        "sensitivity_overview": {
+            "scenario_count": sensitivity["scenario_count"],
+            "positive_scenarios": sensitivity["positive_scenarios"],
+            "positive_share": sensitivity["positive_share"],
+            "by_cost_bps": sensitivity["by_cost_bps"],
+            "primary_verification": sensitivity["primary_verification"],
+        },
+    }, ensure_ascii=False, indent=2))
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BTC Signal Core 0.1.6")
+    parser = argparse.ArgumentParser(description="BTC Signal Core 0.2.0a1")
     commands = parser.add_subparsers(dest="command", required=True)
     live = commands.add_parser("live", help="Evaluate the newest closed candles")
     live.add_argument("--dry-run", action="store_true", help="Do not store or notify")
@@ -165,6 +266,15 @@ def main() -> None:
         "--output", default="reports/backtest_sensitivity.json"
     )
     sensitivity.add_argument("--baseline-summary", default=None)
+    trend = commands.add_parser(
+        "trend-backtest", help="Run the frozen 2020-2023 4H trend-long holdout"
+    )
+    trend.add_argument("--evaluation-start", default="2020-01-01")
+    trend.add_argument("--evaluation-end", default="2024-01-01")
+    trend.add_argument("--archive-start", default="2019-06")
+    trend.add_argument("--archive-end", default="2024-03")
+    trend.add_argument("--reports-dir", default="reports/trend_2020_2023")
+    trend.add_argument("--cache-dir", default=".cache/binance")
     args = parser.parse_args()
     if args.command == "live":
         result = run_once(dry_run=args.dry_run, notify_watch=not args.no_watch)
@@ -178,8 +288,17 @@ def main() -> None:
             args.diagnostics_output,
             args.manifest_output,
         )
-    else:
+    elif args.command == "sensitivity":
         _sensitivity(args.market_input, args.output, args.baseline_summary)
+    else:
+        _trend_backtest(
+            args.evaluation_start,
+            args.evaluation_end,
+            args.archive_start,
+            args.archive_end,
+            args.reports_dir,
+            args.cache_dir,
+        )
 
 
 if __name__ == "__main__":

@@ -53,6 +53,24 @@ risk:
   slippage_bps_round_trip: 10
   max_cost_r: 0.60
 
+# Frozen before the one-time 2020-2023 historical holdout. Sensitivity output is
+# descriptive only and must not be used to replace this primary specification.
+trend_long:
+  timeframe: 4h
+  breakout_bars: 20
+  ema_period: 200
+  ema_slope_bars: 20
+  atr_period: 14
+  initial_stop_atr: 2.0
+  trailing_atr: 3.0
+  trailing_activation_atr: 1.0
+  min_risk_to_cost: 8.0
+  max_holding_days: 60
+  require_channel_reset: true
+  round_trip_cost_bps: 30
+  regime_lookback_days: 180
+  regime_threshold: 0.15
+
 weights:
   level_quality: 30
   regime: 20
