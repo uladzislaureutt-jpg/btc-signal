@@ -33,7 +33,7 @@ class Decision:
     factors: dict[str, dict[str, object]]
     vetoes: list[str]
     provider: str | None = None
-    strategy_version: str = "0.1.4"
+    strategy_version: str = "0.1.5"
 
     @property
     def dedup_key(self) -> str:

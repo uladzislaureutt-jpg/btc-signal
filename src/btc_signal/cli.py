@@ -103,6 +103,12 @@ def _backtest(
         "higher_timeframe_partial_bar_policy": summary["higher_timeframe_partial_bar_policy"],
         "data_quality_status": summary["data_quality"]["status"],
         "data_quality_warnings": summary["data_quality"]["warnings"],
+        "bootstrap_method": summary["bootstrap"]["method"],
+        "bootstrap_samples": summary["bootstrap"]["samples"],
+        "bootstrap_seed": summary["bootstrap"]["seed"],
+        "walk_forward_method": summary["walk_forward"]["method"],
+        "walk_forward_train_days": summary["walk_forward"]["train_days"],
+        "walk_forward_test_days": summary["walk_forward"]["test_days"],
     }
     manifest_path = _write_json(manifest_output, manifest)
     print(json.dumps({
@@ -117,7 +123,7 @@ def _backtest(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BTC Signal Core 0.1.4")
+    parser = argparse.ArgumentParser(description="BTC Signal Core 0.1.5")
     commands = parser.add_subparsers(dest="command", required=True)
     live = commands.add_parser("live", help="Evaluate the newest closed candles")
     live.add_argument("--dry-run", action="store_true", help="Do not store or notify")

@@ -7,6 +7,13 @@ import numpy as np
 import pandas as pd
 
 from .strategy import Decision, EvaluationTrace, evaluate_with_trace
+from .validation import (
+    fixed_walk_forward,
+    moving_block_bootstrap,
+    outcome_metrics,
+    time_breakdown,
+    trade_breakdown,
+)
 
 
 BACKTEST_WARMUP_HOURS = 24 * 210
@@ -301,13 +308,6 @@ def _counterfactual_summary(trades: list[Trade]) -> dict:
     }
 
 
-def _trade_breakdown(trades: list[Trade], attribute: str) -> dict:
-    groups: dict[str, list[Trade]] = defaultdict(list)
-    for trade in trades:
-        groups[str(getattr(trade, attribute))].append(trade)
-    return {name: _counterfactual_summary(items) for name, items in sorted(groups.items())}
-
-
 def _record_trace(
     trace: EvaluationTrace,
     future: pd.DataFrame,
@@ -474,19 +474,11 @@ def run_backtest(frame_1h: pd.DataFrame, config: dict) -> tuple[list[Trade], dic
             trades.append(trade)
             position_until = pd.Timestamp(trade.exit_time)
             cooldown_until = pd.Timestamp(trade.entry_time) + cooldown
-    values = np.array([trade.r_multiple for trade in trades], dtype=float)
-    wins = values[values > 0]
-    losses = values[values <= 0]
-    equity = values.cumsum() if len(values) else np.array([])
-    peaks = np.maximum.accumulate(equity) if len(equity) else np.array([])
-    drawdowns = equity - peaks if len(equity) else np.array([])
+    core_metrics = outcome_metrics(trade.r_multiple for trade in trades)
+    evaluation_start = frame_1h.index[warmup_hours]
+    evaluation_end = pd.Timestamp(frame_1h["close_time"].iloc[len(frame_1h) - max_holding - 1])
     summary = {
-        "trades": len(trades),
-        "win_rate": float((values > 0).mean()) if len(values) else 0.0,
-        "expectancy_r": float(values.mean()) if len(values) else 0.0,
-        "total_r": float(values.sum()) if len(values) else 0.0,
-        "profit_factor": float(wins.sum() / abs(losses.sum())) if len(losses) and losses.sum() else None,
-        "max_drawdown_r": float(drawdowns.min()) if len(drawdowns) else 0.0,
+        **core_metrics,
         "gross_total_r": float(sum(trade.gross_r for trade in trades)),
         "total_cost_r": float(sum(trade.cost_r for trade in trades)),
         "average_cost_r": float(np.mean([trade.cost_r for trade in trades])) if trades else 0.0,
@@ -496,8 +488,14 @@ def run_backtest(frame_1h: pd.DataFrame, config: dict) -> tuple[list[Trade], dic
         "funding_model": "not_applicable_spot",
         "higher_timeframe_partial_bar_policy": "exclude_groups_missing_any_1h_bar",
         "data_quality": data_quality,
-        "by_side": _trade_breakdown(trades, "side"),
-        "by_regime": _trade_breakdown(trades, "regime"),
+        "by_side": trade_breakdown(trades, "side"),
+        "by_regime": trade_breakdown(trades, "regime"),
+        "by_year": time_breakdown(trades, "year"),
+        "by_quarter": time_breakdown(trades, "quarter"),
+        "bootstrap": moving_block_bootstrap(trades),
+        "walk_forward": fixed_walk_forward(
+            trades, evaluation_start, evaluation_end, train_days=180, test_days=90
+        ),
         "diagnostics": _finalize_diagnostics(diagnostics),
     }
     return trades, summary
