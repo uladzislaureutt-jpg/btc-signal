@@ -25,6 +25,7 @@ jobs:
       - run: pip install --no-deps .
       - name: Run frozen holdout and 81-scenario robustness surface
         run: |
+          mkdir -p reports/trend_2020_2023
           btc-signal trend-backtest \
             --evaluation-start 2020-01-01 \
             --evaluation-end 2024-01-01 \
