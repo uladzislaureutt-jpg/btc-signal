@@ -71,6 +71,24 @@ trend_long:
   regime_lookback_days: 180
   regime_threshold: 0.15
 
+# Frozen before the one-time 2020-2023 USD-M perpetual holdout. This engine
+# tests rejection from resistance, not trend-following shorts.
+short_reversion:
+  timeframe: 4h
+  resistance_lookback_bars: 20
+  atr_period: 14
+  rsi_period: 14
+  min_rsi: 60
+  rejection_close_location_max: 0.50
+  initial_stop_atr: 2.0
+  target_r: 2.0
+  min_risk_to_cost: 8.0
+  max_holding_days: 14
+  cooldown_hours: 72
+  round_trip_cost_bps: 30
+  regime_lookback_days: 180
+  regime_threshold: 0.15
+
 weights:
   level_quality: 30
   regime: 20

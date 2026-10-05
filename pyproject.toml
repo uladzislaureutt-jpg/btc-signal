@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "btc-signal-core"
-version = "0.2.0a1"
+version = "0.2.0a2"
 description = "Causal BTCUSDT signal research and validation engine"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"

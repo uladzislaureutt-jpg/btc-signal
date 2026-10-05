@@ -1,0 +1,61 @@
+name: Frozen BTC short-reversion holdout 2020-2023
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/short-backtest-trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  short-holdout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.lock
+      - run: pip install --no-deps .
+      - name: Run frozen perpetual short holdout
+        run: |
+          mkdir -p reports/short_2020_2023
+          btc-signal short-backtest \
+            --evaluation-start 2020-01-01 \
+            --evaluation-end 2024-01-01 \
+            --archive-start 2019-10 \
+            --archive-end 2024-01 \
+            --reports-dir reports/short_2020_2023 \
+            | tee reports/short_2020_2023/console_summary.json
+      - name: Publish short holdout summary
+        if: always()
+        run: |
+          if [ -f reports/short_2020_2023/short_summary.json ]; then
+            echo '### Frozen BTC short-reversion holdout' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            jq '{trades, total_r, gross_total_r, total_trading_cost_r, total_funding_r, expectancy_r, profit_factor, max_drawdown_r, median_risk_pct, median_holding_hours, exposure_pct, by_year, by_regime, bootstrap, strategy_equity_1pct_risk, data_quality, funding_quality, diagnostics}' reports/short_2020_2023/short_summary.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Publish robustness summary
+        if: always()
+        run: |
+          if [ -f reports/short_2020_2023/short_sensitivity.json ]; then
+            echo '### Frozen robustness surface' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            jq '{method, scenario_count, positive_scenarios, positive_share, primary_parameters, primary_replay, primary_verification, by_cost_bps}' reports/short_2020_2023/short_sensitivity.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload independently reviewable reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-short-reversion-2020-2023-run-${{ github.run_number }}
+          path: reports/short_2020_2023/
+          if-no-files-found: error
+          retention-days: 30
