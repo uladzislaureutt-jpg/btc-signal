@@ -4,6 +4,13 @@ on:
   workflow_dispatch:
   schedule:
     - cron: "7 */4 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "src/btc_signal/**"
+      - "config/strategy.yaml"
+      - "requirements.lock"
+      - ".github/workflows/shadow.yml"
 
 permissions:
   contents: read
@@ -24,7 +31,12 @@ jobs:
           cache: pip
       - run: pip install -r requirements.lock
       - run: pip install --no-deps .
-      - run: btc-signal live
+      - name: Dry-run signal after code changes
+        if: github.event_name == 'push'
+        run: btc-signal live --dry-run
+      - name: Produce scheduled or manual signal
+        if: github.event_name != 'push'
+        run: btc-signal live
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
