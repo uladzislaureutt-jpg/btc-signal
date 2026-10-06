@@ -376,7 +376,7 @@ def main() -> None:
     )
     short.add_argument("--evaluation-start", default="2020-01-01")
     short.add_argument("--evaluation-end", default="2024-01-01")
-    short.add_argument("--archive-start", default="2019-10")
+    short.add_argument("--archive-start", default="2020-01")
     short.add_argument("--archive-end", default="2024-01")
     short.add_argument("--reports-dir", default="reports/short_2020_2023")
     short.add_argument("--cache-dir", default=".cache/binance-perpetual")

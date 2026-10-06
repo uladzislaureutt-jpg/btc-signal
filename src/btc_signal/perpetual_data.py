@@ -13,9 +13,6 @@ import pandas as pd
 from .historical_data import KLINE_COLUMNS, month_range
 
 
-FUTURES_ROOT = "https://data.binance.vision/data/futures/um/monthly"
-
-
 @dataclass(frozen=True)
 class PerpetualArchiveRecord:
     dataset: str
@@ -159,25 +156,20 @@ def _download(
 
 def download_perpetual_history(
     *, symbol: str = "BTCUSDT", interval: str = "1h",
-    start_month: str = "2019-10", end_month: str = "2024-01",
+    start_month: str = "2020-01", end_month: str = "2024-01",
     cache_dir: str | Path = ".cache/binance-perpetual",
     workers: int = 8, timeout: int = 60, retries: int = 3,
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[dict]]:
     months = month_range(start_month, end_month)
-    cache = Path(cache_dir)
-    monthly = [month for month in months if month >= "2020-01"]
-    warmup_daily = [
-        day.strftime("%Y-%m-%d")
-        for day in pd.date_range(
-            pd.Period(start_month, freq="M").start_time,
-            min(pd.Period(end_month, freq="M").end_time, pd.Timestamp("2019-12-31")),
-            freq="1D",
+    if start_month < "2020-01":
+        raise ValueError(
+            "Official Binance USD-M BTCUSDT public archives begin in 2020-01; "
+            "use 2020-01 or later and allow indicators to warm up in-sample."
         )
-    ] if start_month < "2020-01" else []
+    cache = Path(cache_dir)
     jobs = (
-        [("klines", day, "daily") for day in warmup_daily]
-        + [("klines", month, "monthly") for month in monthly]
-        + [("fundingRate", month, "monthly") for month in monthly]
+        [("klines", month, "monthly") for month in months]
+        + [("fundingRate", month, "monthly") for month in months]
     )
     downloaded: dict[tuple[str, str, str], tuple[pd.DataFrame, PerpetualArchiveRecord]] = {}
     with ThreadPoolExecutor(max_workers=min(workers, len(jobs))) as executor:

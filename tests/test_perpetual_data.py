@@ -46,9 +46,9 @@ def test_parse_funding_archive_with_official_headers():
     assert frame.loc[0, "interval_hours"] == 8
 
 
-def test_daily_warmup_and_monthly_urls_are_explicit():
-    assert _url("BTCUSDT", "2019-12-31", "klines", "1h", "daily").endswith(
-        "/daily/klines/BTCUSDT/1h/BTCUSDT-1h-2019-12-31.zip"
+def test_monthly_perpetual_urls_are_explicit():
+    assert _url("BTCUSDT", "2020-01", "klines", "1h", "monthly").endswith(
+        "/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2020-01.zip"
     )
     assert _url("BTCUSDT", "2020-01", "fundingRate", "1h", "monthly").endswith(
         "/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2020-01.zip"

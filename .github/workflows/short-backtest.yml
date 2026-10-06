@@ -30,7 +30,7 @@ jobs:
           btc-signal short-backtest \
             --evaluation-start 2020-01-01 \
             --evaluation-end 2024-01-01 \
-            --archive-start 2019-10 \
+            --archive-start 2020-01 \
             --archive-end 2024-01 \
             --reports-dir reports/short_2020_2023 \
             | tee reports/short_2020_2023/console_summary.json
