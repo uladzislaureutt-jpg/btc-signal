@@ -55,3 +55,12 @@ def test_no_breakout_is_neutral():
     decision = evaluate_trend_signal(frame, config(), "test_perpetual", 50_000.0, now=now)
     assert decision.state == "neutral"
     assert "no_4h_trend_breakout" in decision.vetoes
+
+
+def test_same_breakout_deduplicates_when_live_price_moves():
+    frame = _breakout_frame("long")
+    now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
+    first = evaluate_trend_signal(frame, config(), "test_perpetual", 55_000.0, now=now)
+    second = evaluate_trend_signal(frame, config(), "test_perpetual", 55_100.0, now=now)
+    assert first.state == second.state == "signal"
+    assert first.dedup_key == second.dedup_key

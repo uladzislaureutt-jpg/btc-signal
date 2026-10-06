@@ -37,11 +37,23 @@ class Decision:
 
     @property
     def dedup_key(self) -> str:
-        raw = json.dumps(
-            [self.timestamp, self.state, self.side, round(self.price, 2), self.level],
-            ensure_ascii=False,
-            sort_keys=True,
-        )
+        if self.strategy_version == "0.3.1":
+            identity = [
+                self.strategy_version,
+                self.timestamp,
+                self.state,
+                self.side,
+                self.level,
+            ]
+        else:
+            identity = [
+                self.timestamp,
+                self.state,
+                self.side,
+                round(self.price, 2),
+                self.level,
+            ]
+        raw = json.dumps(identity, ensure_ascii=False, sort_keys=True)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def to_dict(self) -> dict:
