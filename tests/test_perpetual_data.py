@@ -3,7 +3,7 @@ import zipfile
 
 import pandas as pd
 
-from btc_signal.perpetual_data import parse_funding_zip, parse_perpetual_kline_zip
+from btc_signal.perpetual_data import _url, parse_funding_zip, parse_perpetual_kline_zip
 
 
 def _zip(name: str, content: str) -> bytes:
@@ -44,3 +44,12 @@ def test_parse_funding_archive_with_official_headers():
     assert frame.loc[0, "funding_time"] == pd.Timestamp("2020-01-01T00:00:00Z")
     assert frame.loc[0, "funding_rate"] == 0.0001
     assert frame.loc[0, "interval_hours"] == 8
+
+
+def test_daily_warmup_and_monthly_urls_are_explicit():
+    assert _url("BTCUSDT", "2019-12-31", "klines", "1h", "daily").endswith(
+        "/daily/klines/BTCUSDT/1h/BTCUSDT-1h-2019-12-31.zip"
+    )
+    assert _url("BTCUSDT", "2020-01", "fundingRate", "1h", "monthly").endswith(
+        "/monthly/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2020-01.zip"
+    )
