@@ -5,8 +5,9 @@ from dataclasses import dataclass
 from .config import load_config
 from .data import build_market_data
 from .storage import build_store
-from .strategy import Decision, evaluate
+from .strategy import Decision
 from .telegram import send
+from .trend_live import evaluate_trend_signal
 
 
 @dataclass
@@ -21,15 +22,15 @@ def run_once(dry_run: bool = False, notify_watch: bool = True) -> RunResult:
     market = build_market_data(config)
     symbol = config["market"]["symbol"]
     history = config["history"]
-    frames = market.bundle(
+    frames, current_price = market.snapshot(
         symbol=symbol,
         intervals={
-            "1h": int(history["live_1h_bars"]),
             "4h": int(history["live_4h_bars"]),
-            "1d": int(history["live_1d_bars"]),
         },
     )
-    decision = evaluate(frames["1d"], frames["4h"], frames["1h"], config, market.last_provider)
+    decision = evaluate_trend_signal(
+        frames["4h"], config, market.last_provider, current_price
+    )
     if dry_run:
         return RunResult(decision=decision, duplicate=False, notified=False)
     store = build_store()

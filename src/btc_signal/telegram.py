@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import html
 import os
 
 import requests
@@ -13,24 +12,23 @@ def _money(value: float | None) -> str:
 
 
 def format_decision(decision: Decision) -> str:
-    icons = {"watch": "👀", "signal": "🟢", "strong_signal": "🔥"}
-    titles = {"watch": "WATCH", "signal": "SIGNAL", "strong_signal": "STRONG SIGNAL"}
     side = (decision.side or "—").upper()
-    zone = decision.level or {}
-    volume = decision.factors.get("volume", {}).get("value", "—")
-    rsi_value = decision.factors.get("momentum", {}).get("value", "—")
+    breakout = decision.level or {}
+    exit_plan = decision.factors.get("exit_plan", {})
+    entry = decision.entry_low
     return (
-        f"{icons.get(decision.state, 'ℹ️')} <b>BTC · {side} {titles.get(decision.state, decision.state.upper())} · {decision.score}/100</b>\n\n"
-        f"Цена: <b>{_money(decision.price)}</b>\n"
-        f"4H-зона: {_money(zone.get('low'))}–{_money(zone.get('high'))} · качество {zone.get('quality', '—')}/10\n"
-        f"1D: {html.escape(decision.regime)}\n"
-        f"Volume ratio: {volume} · RSI: {rsi_value}\n\n"
-        f"Entry: {_money(decision.entry_low)}–{_money(decision.entry_high)}\n"
-        f"Stop: {_money(decision.stop)}\n"
-        f"Target 1: {_money(decision.target_1)}\n"
-        f"Target 2: {_money(decision.target_2)}\n"
-        f"R/R: {decision.rr:.2f}\n\n"
-        f"<i>Shadow signal · не является финансовой рекомендацией</i>"
+        f"📈 <b>BTCUSDT PERPETUAL · {side}</b>\n\n"
+        f"Вход: <b>{_money(entry)}</b>\n"
+        f"Стоп-лосс: <b>{_money(decision.stop)}</b>\n"
+        f"TP1 (ориентир 2R): {_money(decision.target_1)}\n"
+        f"TP2 (ориентир 3R): {_money(decision.target_2)}\n\n"
+        f"Пробой 4H: {_money(breakout.get('price'))}\n"
+        f"Трейлинг включить от: {_money(exit_plan.get('activation_price'))}\n"
+        f"Дистанция трейлинга: {exit_plan.get('trailing_distance_atr', '—')} ATR(4H)\n"
+        f"Источник: {decision.provider or '—'}\n"
+        f"Свеча закрыта: {decision.timestamp}\n\n"
+        f"<i>Основной выход — трейлинг; TP1/TP2 являются ценовыми ориентирами. "
+        f"Сигнал не исполняет ордер автоматически.</i>"
     )
 
 

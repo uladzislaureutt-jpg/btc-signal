@@ -486,9 +486,9 @@ def _trend_v030_backtest(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BTC Signal Core 0.3.0")
+    parser = argparse.ArgumentParser(description="BTC Signal Core 0.3.1")
     commands = parser.add_subparsers(dest="command", required=True)
-    live = commands.add_parser("live", help="Evaluate the newest closed candles")
+    live = commands.add_parser("live", help="Generate the current 4H trend signal")
     live.add_argument("--dry-run", action="store_true", help="Do not store or notify")
     live.add_argument("--no-watch", action="store_true", help="Do not notify WATCH states")
     backtest = commands.add_parser("backtest", help="Run a historical shadow test")

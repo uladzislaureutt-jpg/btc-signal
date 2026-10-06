@@ -1,13 +1,15 @@
-name: BTC shadow signal
+name: BTC trend signal
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "7 */4 * * *"
 
 permissions:
   contents: read
 
 concurrency:
-  group: btc-shadow-signal
+  group: btc-trend-signal
   cancel-in-progress: false
 
 jobs:

@@ -8,7 +8,7 @@ from fastapi import FastAPI, Header, HTTPException
 from .runner import run_once
 
 
-app = FastAPI(title="BTC Signal Core", version="0.1.0")
+app = FastAPI(title="BTC Signal Core", version="0.3.1")
 
 
 @app.get("/health")

@@ -27,6 +27,8 @@ class MarketProvider(Protocol):
         end_ms: int | None = None,
     ) -> pd.DataFrame: ...
 
+    def ticker(self, symbol: str) -> float: ...
+
 
 def _frame(rows: list[list[object]]) -> pd.DataFrame:
     frame = pd.DataFrame(rows, columns=COLUMNS)
@@ -48,6 +50,8 @@ class BinanceProvider:
     timeout: int = 20
     base_url: str = "https://api.binance.com"
     name: str = "binance"
+    klines_path: str = "/api/v3/klines"
+    ticker_path: str = "/api/v3/ticker/price"
 
     def klines(
         self,
@@ -72,7 +76,7 @@ class BinanceProvider:
             if end_ms is not None:
                 params["endTime"] = end_ms
             response = requests.get(
-                f"{self.base_url}/api/v3/klines", params=params, timeout=self.timeout
+                f"{self.base_url}{self.klines_path}", params=params, timeout=self.timeout
             )
             response.raise_for_status()
             payload = response.json()
@@ -91,6 +95,18 @@ class BinanceProvider:
             time.sleep(0.05)
         return _frame(rows)
 
+    def ticker(self, symbol: str) -> float:
+        response = requests.get(
+            f"{self.base_url}{self.ticker_path}",
+            params={"symbol": symbol},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        price = float(response.json()["price"])
+        if price <= 0:
+            raise MarketDataError("Exchange returned an invalid ticker price")
+        return price
+
 
 BYBIT_INTERVALS = {"1h": "60", "4h": "240", "1d": "D"}
 
@@ -100,6 +116,7 @@ class BybitProvider:
     timeout: int = 20
     base_url: str = "https://api.bybit.com"
     name: str = "bybit"
+    category: str = "spot"
 
     def klines(
         self,
@@ -118,7 +135,7 @@ class BybitProvider:
         while remaining > 0:
             batch = min(remaining, 1000)
             params: dict[str, object] = {
-                "category": "spot",
+                "category": self.category,
                 "symbol": symbol,
                 "interval": BYBIT_INTERVALS[interval],
                 "limit": batch,
@@ -158,6 +175,24 @@ class BybitProvider:
             time.sleep(0.05)
         return _frame(rows)
 
+    def ticker(self, symbol: str) -> float:
+        response = requests.get(
+            f"{self.base_url}/v5/market/tickers",
+            params={"category": self.category, "symbol": symbol},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("retCode") != 0:
+            raise MarketDataError(payload.get("retMsg", "Bybit API error"))
+        rows = payload.get("result", {}).get("list", [])
+        if not rows:
+            raise MarketDataError("Bybit returned no ticker")
+        price = float(rows[0]["lastPrice"])
+        if price <= 0:
+            raise MarketDataError("Exchange returned an invalid ticker price")
+        return price
+
 
 class ResilientMarketData:
     def __init__(self, providers: list[MarketProvider]):
@@ -193,6 +228,25 @@ class ResilientMarketData:
                 errors.append(f"{provider.name}: {exc}")
         raise MarketDataError("; ".join(errors))
 
+    def snapshot(
+        self, symbol: str, intervals: dict[str, int]
+    ) -> tuple[dict[str, pd.DataFrame], float]:
+        """Fetch candles and the live price from one derivatives venue."""
+        errors: list[str] = []
+        for provider in self.providers:
+            frames: dict[str, pd.DataFrame] = {}
+            try:
+                for interval, limit in intervals.items():
+                    frames[interval] = closed_candles(
+                        provider.klines(symbol=symbol, interval=interval, limit=limit)
+                    )
+                price = provider.ticker(symbol)
+                self.last_provider = provider.name
+                return frames, price
+            except (requests.RequestException, MarketDataError, ValueError, KeyError) as exc:
+                errors.append(f"{provider.name}: {exc}")
+        raise MarketDataError("; ".join(errors))
+
 
 def closed_candles(frame: pd.DataFrame, now: pd.Timestamp | None = None) -> pd.DataFrame:
     current = now or pd.Timestamp.now(tz="UTC")
@@ -208,6 +262,23 @@ def build_market_data(config: dict) -> ResilientMarketData:
             timeout=timeout,
             base_url="https://api.binance.us",
             name="binance_us",
+        ),
+        "binance_data": BinanceProvider(
+            timeout=timeout,
+            base_url="https://data-api.binance.vision",
+            name="binance_spot_proxy",
+        ),
+        "binance_usdm": BinanceProvider(
+            timeout=timeout,
+            base_url="https://fapi.binance.com",
+            name="binance_usdm",
+            klines_path="/fapi/v1/klines",
+            ticker_path="/fapi/v1/ticker/price",
+        ),
+        "bybit_linear": BybitProvider(
+            timeout=timeout,
+            name="bybit_linear",
+            category="linear",
         ),
     }
     selected = config["market"].get("sources")
