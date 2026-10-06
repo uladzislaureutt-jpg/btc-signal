@@ -19,7 +19,8 @@ FUTURES_ROOT = "https://data.binance.vision/data/futures/um/monthly"
 @dataclass(frozen=True)
 class PerpetualArchiveRecord:
     dataset: str
-    month: str
+    partition: str
+    frequency: str
     url: str
     checksum_url: str
     expected_sha256: str
@@ -114,21 +115,24 @@ def parse_funding_zip(payload: bytes) -> pd.DataFrame:
     return result
 
 
-def _url(symbol: str, month: str, dataset: str, interval: str = "1h") -> str:
+def _url(
+    symbol: str, partition: str, dataset: str,
+    interval: str = "1h", frequency: str = "monthly",
+) -> str:
     if dataset == "klines":
-        filename = f"{symbol}-{interval}-{month}.zip"
-        return f"{FUTURES_ROOT}/klines/{symbol}/{interval}/{filename}"
+        filename = f"{symbol}-{interval}-{partition}.zip"
+        return f"https://data.binance.vision/data/futures/um/{frequency}/klines/{symbol}/{interval}/{filename}"
     if dataset == "fundingRate":
-        filename = f"{symbol}-fundingRate-{month}.zip"
-        return f"{FUTURES_ROOT}/fundingRate/{symbol}/{filename}"
+        filename = f"{symbol}-fundingRate-{partition}.zip"
+        return f"https://data.binance.vision/data/futures/um/{frequency}/fundingRate/{symbol}/{filename}"
     raise ValueError(f"Unsupported perpetual dataset: {dataset}")
 
 
 def _download(
-    *, symbol: str, month: str, dataset: str, interval: str,
+    *, symbol: str, partition: str, frequency: str, dataset: str, interval: str,
     cache_dir: Path, timeout: int, retries: int,
 ) -> tuple[pd.DataFrame, PerpetualArchiveRecord]:
-    url = _url(symbol, month, dataset, interval)
+    url = _url(symbol, partition, dataset, interval, frequency)
     checksum_url = f"{url}.CHECKSUM"
     expected = _checksum(_request_bytes(checksum_url, timeout=timeout, retries=retries))
     cache_path = cache_dir / dataset / Path(url).name
@@ -146,7 +150,8 @@ def _download(
         if dataset == "klines" else parse_funding_zip(payload)
     )
     return frame, PerpetualArchiveRecord(
-        dataset=dataset, month=month, url=url, checksum_url=checksum_url,
+        dataset=dataset, partition=partition, frequency=frequency,
+        url=url, checksum_url=checksum_url,
         expected_sha256=expected, actual_sha256=actual,
         bytes=len(payload), rows=len(frame),
     )
@@ -160,27 +165,41 @@ def download_perpetual_history(
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[dict]]:
     months = month_range(start_month, end_month)
     cache = Path(cache_dir)
-    jobs = [(dataset, month) for dataset in ("klines", "fundingRate") for month in months]
-    downloaded: dict[tuple[str, str], tuple[pd.DataFrame, PerpetualArchiveRecord]] = {}
+    monthly = [month for month in months if month >= "2020-01"]
+    warmup_daily = [
+        day.strftime("%Y-%m-%d")
+        for day in pd.date_range(
+            pd.Period(start_month, freq="M").start_time,
+            min(pd.Period(end_month, freq="M").end_time, pd.Timestamp("2019-12-31")),
+            freq="1D",
+        )
+    ] if start_month < "2020-01" else []
+    jobs = (
+        [("klines", day, "daily") for day in warmup_daily]
+        + [("klines", month, "monthly") for month in monthly]
+        + [("fundingRate", month, "monthly") for month in monthly]
+    )
+    downloaded: dict[tuple[str, str, str], tuple[pd.DataFrame, PerpetualArchiveRecord]] = {}
     with ThreadPoolExecutor(max_workers=min(workers, len(jobs))) as executor:
         futures = {
             executor.submit(
-                _download, symbol=symbol, month=month, dataset=dataset,
+                _download, symbol=symbol, partition=partition, frequency=frequency,
+                dataset=dataset,
                 interval=interval, cache_dir=cache, timeout=timeout, retries=retries,
-            ): (dataset, month)
-            for dataset, month in jobs
+            ): (dataset, partition, frequency)
+            for dataset, partition, frequency in jobs
         }
         for future in as_completed(futures):
             downloaded[futures[future]] = future.result()
 
     klines = pd.concat(
-        [downloaded[("klines", month)][0] for month in months], ignore_index=True
+        [downloaded[job][0] for job in jobs if job[0] == "klines"], ignore_index=True
     ).sort_values("open_time")
     if klines["open_time"].duplicated().any():
         raise ValueError("Duplicate perpetual kline timestamps")
     klines = klines.set_index("open_time")
     funding = pd.concat(
-        [downloaded[("fundingRate", month)][0] for month in months], ignore_index=True
+        [downloaded[job][0] for job in jobs if job[0] == "fundingRate"], ignore_index=True
     ).sort_values("funding_time")
     if funding["funding_time"].duplicated().any():
         duplicates = funding[funding["funding_time"].duplicated(keep=False)]
@@ -189,7 +208,6 @@ def download_perpetual_history(
         funding = funding.drop_duplicates("funding_time", keep="last")
     funding = funding.set_index("funding_time")
     manifest = [
-        asdict(downloaded[(dataset, month)][1])
-        for dataset in ("klines", "fundingRate") for month in months
+        asdict(downloaded[job][1]) for job in jobs
     ]
     return klines, funding, manifest
