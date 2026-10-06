@@ -109,6 +109,7 @@ class BinanceProvider:
 
 
 BYBIT_INTERVALS = {"1h": "60", "4h": "240", "1d": "D"}
+OKX_INTERVALS = {"1h": "1H", "4h": "4H", "1d": "1Dutc"}
 
 
 @dataclass
@@ -189,6 +190,87 @@ class BybitProvider:
         if not rows:
             raise MarketDataError("Bybit returned no ticker")
         price = float(rows[0]["lastPrice"])
+        if price <= 0:
+            raise MarketDataError("Exchange returned an invalid ticker price")
+        return price
+
+
+@dataclass
+class OkxSwapProvider:
+    timeout: int = 20
+    base_url: str = "https://www.okx.com"
+    name: str = "okx_swap"
+
+    @staticmethod
+    def instrument(symbol: str) -> str:
+        if symbol != "BTCUSDT":
+            raise MarketDataError(f"Unsupported OKX swap symbol: {symbol}")
+        return "BTC-USDT-SWAP"
+
+    def klines(
+        self,
+        symbol: str,
+        interval: str,
+        limit: int,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+    ) -> pd.DataFrame:
+        if interval not in OKX_INTERVALS:
+            raise MarketDataError(f"Unsupported OKX interval: {interval}")
+        duration_ms = {"1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}[interval]
+        remaining = limit
+        cursor = end_ms
+        rows: list[list[object]] = []
+        while remaining > 0:
+            batch = min(remaining, 300)
+            params: dict[str, object] = {
+                "instId": self.instrument(symbol),
+                "bar": OKX_INTERVALS[interval],
+                "limit": batch,
+            }
+            if cursor is not None:
+                params["after"] = cursor
+            response = requests.get(
+                f"{self.base_url}/api/v5/market/candles",
+                params=params,
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if payload.get("code") != "0":
+                raise MarketDataError(payload.get("msg", "OKX API error"))
+            batch_rows = payload.get("data", [])
+            if not batch_rows:
+                break
+            converted = []
+            for row in batch_rows:
+                open_ms = int(row[0])
+                if start_ms is not None and open_ms < start_ms:
+                    continue
+                converted.append(
+                    [open_ms, row[1], row[2], row[3], row[4], row[5], open_ms + duration_ms - 1]
+                )
+            rows.extend(converted)
+            remaining -= len(converted)
+            oldest = min(int(row[0]) for row in batch_rows)
+            if len(batch_rows) < batch or (start_ms is not None and oldest <= start_ms):
+                break
+            cursor = oldest
+            time.sleep(0.05)
+        return _frame(rows)
+
+    def ticker(self, symbol: str) -> float:
+        response = requests.get(
+            f"{self.base_url}/api/v5/market/ticker",
+            params={"instId": self.instrument(symbol)},
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        rows = payload.get("data", [])
+        if payload.get("code") != "0" or not rows:
+            raise MarketDataError(payload.get("msg", "OKX returned no ticker"))
+        price = float(rows[0]["last"])
         if price <= 0:
             raise MarketDataError("Exchange returned an invalid ticker price")
         return price
@@ -280,6 +362,7 @@ def build_market_data(config: dict) -> ResilientMarketData:
             name="bybit_linear",
             category="linear",
         ),
+        "okx_swap": OkxSwapProvider(timeout=timeout),
     }
     selected = config["market"].get("sources")
     if not selected:

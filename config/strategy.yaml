@@ -3,6 +3,7 @@ market:
   sources:
     - binance_usdm
     - bybit_linear
+    - okx_swap
     - binance_data
   request_timeout_seconds: 20
 
@@ -13,7 +14,7 @@ timeframes:
 
 history:
   live_1h_bars: 1000
-  live_4h_bars: 800
+  live_4h_bars: 260
   live_1d_bars: 400
   backtest_days: 240
 

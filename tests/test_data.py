@@ -1,6 +1,11 @@
 import pandas as pd
 
-from btc_signal.data import MarketDataError, ResilientMarketData, closed_candles
+from btc_signal.data import (
+    MarketDataError,
+    OkxSwapProvider,
+    ResilientMarketData,
+    closed_candles,
+)
 from conftest import candles
 
 
@@ -81,3 +86,23 @@ def test_snapshot_keeps_candles_and_ticker_on_one_provider():
     assert set(frames) == {"4h"}
     assert price == 50_123.0
     assert client.last_provider == "complete"
+
+
+def test_okx_swap_candles_are_normalized(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "code": "0",
+                "data": [
+                    ["14400000", "101", "104", "99", "103", "10", "0", "0", "1"],
+                    ["0", "100", "103", "98", "101", "11", "0", "0", "1"],
+                ],
+            }
+
+    monkeypatch.setattr("btc_signal.data.requests.get", lambda *args, **kwargs: Response())
+    frame = OkxSwapProvider().klines("BTCUSDT", "4h", 2)
+    assert list(frame["close"]) == [101, 103]
+    assert frame["close_time"].iloc[0] == pd.Timestamp("1970-01-01 03:59:59.999", tz="UTC")
