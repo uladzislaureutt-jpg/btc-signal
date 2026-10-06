@@ -89,6 +89,22 @@ short_reversion:
   regime_lookback_days: 180
   regime_threshold: 0.15
 
+# Research release 0.3.0. Frozen before the combined 2020-2026 YTD run.
+# The prior short-reversion engine remains archived and is not part of 0.3.0.
+trend_bidirectional:
+  timeframe: 4h
+  breakout_bars: 20
+  ema_period: 200
+  atr_period: 14
+  initial_stop_atr: 2.0
+  trailing_atr: 3.0
+  trailing_activation_atr: 1.0
+  min_risk_to_cost: 8.0
+  max_holding_days: 60
+  round_trip_cost_bps: 30
+  regime_lookback_days: 180
+  regime_threshold: 0.15
+
 weights:
   level_quality: 30
   regime: 20

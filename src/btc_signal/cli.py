@@ -5,7 +5,7 @@ import csv
 import hashlib
 import json
 import os
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pandas as pd
@@ -29,6 +29,13 @@ from .trend import (
     run_trend_backtest,
     run_trend_sensitivity,
     trades_as_dicts as trend_trades_as_dicts,
+)
+from .trend_v030 import (
+    evaluate_success_criteria as evaluate_v030_success,
+    parameters_from_config as trend_v030_parameters_from_config,
+    run_trend_v030_backtest,
+    run_trend_v030_sensitivity,
+    trades_as_dicts as trend_v030_trades_as_dicts,
 )
 
 
@@ -340,8 +347,146 @@ def _short_backtest(
         raise RuntimeError("Short sensitivity replay differs from primary backtest")
 
 
+def _trend_v030_backtest(
+    evaluation_start: str,
+    evaluation_end: str,
+    archive_start: str,
+    archive_end: str,
+    reports_dir: str,
+    cache_dir: str,
+) -> None:
+    config = load_config()
+    output_dir = Path(reports_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frame, funding, sources = download_perpetual_history(
+        symbol=config["market"]["symbol"], interval="1h",
+        start_month=archive_start, end_month=archive_end, cache_dir=cache_dir,
+    )
+    market_path = output_dir / f"btcusdt_perpetual_1h_{archive_start}_{archive_end}.csv"
+    funding_path = output_dir / f"btcusdt_funding_{archive_start}_{archive_end}.csv"
+    frame.to_csv(market_path, index_label="open_time")
+    funding.to_csv(funding_path, index_label="funding_time")
+
+    params = trend_v030_parameters_from_config(config)
+    primary_trades, primary = run_trend_v030_backtest(
+        frame, funding, evaluation_start=evaluation_start,
+        evaluation_end=evaluation_end, params=params, side_mode="both",
+    )
+    long_trades, long_only = run_trend_v030_backtest(
+        frame, funding, evaluation_start=evaluation_start,
+        evaluation_end=evaluation_end, params=params, side_mode="long",
+    )
+    short_trades, short_only = run_trend_v030_backtest(
+        frame, funding, evaluation_start=evaluation_start,
+        evaluation_end=evaluation_end, params=params, side_mode="short",
+    )
+    stress_params = replace(params, round_trip_cost_bps=45)
+    _, stress = run_trend_v030_backtest(
+        frame, funding, evaluation_start=evaluation_start,
+        evaluation_end=evaluation_end, params=stress_params, side_mode="both",
+    )
+    _, stress_long = run_trend_v030_backtest(
+        frame, funding, evaluation_start=evaluation_start,
+        evaluation_end=evaluation_end, params=stress_params, side_mode="long",
+    )
+    _, stress_short = run_trend_v030_backtest(
+        frame, funding, evaluation_start=evaluation_start,
+        evaluation_end=evaluation_end, params=stress_params, side_mode="short",
+    )
+
+    trade_files = {}
+    for name, trades in (
+        ("combined", primary_trades), ("long", long_trades), ("short", short_trades)
+    ):
+        path = output_dir / f"trend_v030_{name}_trades.csv"
+        rows = trend_v030_trades_as_dicts(trades)
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(rows[0]) if rows else ["no_trades"])
+            writer.writeheader()
+            writer.writerows(rows)
+        trade_files[name] = path
+
+    success = evaluate_v030_success(primary, long_only, short_only, stress, stress_short)
+    summary = {
+        "research_release": __version__,
+        "frozen_policy": "0.3.0 parameters and success gates fixed before full-period execution",
+        "period_note": "2026 is year-to-date through the last complete archived month",
+        "primary_combined": primary,
+        "standalone_legs": {"long": long_only, "short": short_only},
+        "stress_45bps": {"combined": stress, "long": stress_long, "short": stress_short},
+        "success_criteria": success,
+    }
+    summary_path = _write_json(str(output_dir / "trend_v030_summary.json"), summary)
+
+    sensitivity = run_trend_v030_sensitivity(
+        frame, funding, evaluation_start=evaluation_start,
+        evaluation_end=evaluation_end, base=params,
+    )
+    replay = sensitivity["primary_replay"]
+    sensitivity["primary_verification"] = {
+        "status": "passed" if (
+            replay["trades"] == primary["trades"]
+            and abs(replay["total_r"] - primary["total_r"]) < 1e-12
+            and abs(replay["gross_total_r"] - primary["gross_total_r"]) < 1e-12
+            and abs(replay["total_funding_r"] - primary["total_funding_r"]) < 1e-12
+        ) else "failed",
+        "expected_trades": primary["trades"],
+        "replayed_trades": replay["trades"],
+        "total_r_delta": replay["total_r"] - primary["total_r"],
+        "funding_r_delta": replay["total_funding_r"] - primary["total_funding_r"],
+    }
+    sensitivity_path = _write_json(
+        str(output_dir / "trend_v030_sensitivity.json"), sensitivity
+    )
+    manifest = {
+        "schema_version": 1,
+        "research_release": __version__,
+        "commit_sha": os.getenv("GITHUB_SHA"),
+        "instrument": "Binance USD-M BTCUSDT perpetual",
+        "source": "official Binance public monthly futures archives",
+        "archive_start": archive_start,
+        "archive_end": archive_end,
+        "evaluation_start": pd.Timestamp(evaluation_start).isoformat(),
+        "evaluation_end_exclusive": pd.Timestamp(evaluation_end).isoformat(),
+        "parameter_selection_policy": "frozen before 0.3.0 full-period run; sensitivity is descriptive only",
+        "primary_parameters": primary["parameters"],
+        "success_criteria": success,
+        "funding_model": primary["funding_model"],
+        "source_archives": sources,
+        "market_data_sha256": _sha256_file(market_path),
+        "funding_data_sha256": _sha256_file(funding_path),
+        "combined_trades_sha256": _sha256_file(trade_files["combined"]),
+        "long_trades_sha256": _sha256_file(trade_files["long"]),
+        "short_trades_sha256": _sha256_file(trade_files["short"]),
+        "summary_sha256": _sha256_file(summary_path),
+        "sensitivity_sha256": _sha256_file(sensitivity_path),
+        "config_sha256": _sha256_json(config),
+    }
+    manifest_path = _write_json(str(output_dir / "trend_v030_manifest.json"), manifest)
+    print(json.dumps({
+        "research_release": __version__,
+        "manifest_file": manifest_path.name,
+        "summary_file": summary_path.name,
+        "sensitivity_file": sensitivity_path.name,
+        "source_archive_count": len(sources),
+        "primary_combined": primary,
+        "standalone_legs": {"long": long_only, "short": short_only},
+        "stress_45bps": {"combined": stress, "long": stress_long, "short": stress_short},
+        "success_criteria": success,
+        "sensitivity_overview": {
+            "scenario_count": sensitivity["scenario_count"],
+            "positive_scenarios": sensitivity["positive_scenarios"],
+            "positive_share": sensitivity["positive_share"],
+            "by_cost_bps": sensitivity["by_cost_bps"],
+            "primary_verification": sensitivity["primary_verification"],
+        },
+    }, ensure_ascii=False, indent=2))
+    if sensitivity["primary_verification"]["status"] != "passed":
+        raise RuntimeError("0.3.0 sensitivity replay differs from primary backtest")
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BTC Signal Core 0.2.0a2")
+    parser = argparse.ArgumentParser(description="BTC Signal Core 0.3.0")
     commands = parser.add_subparsers(dest="command", required=True)
     live = commands.add_parser("live", help="Evaluate the newest closed candles")
     live.add_argument("--dry-run", action="store_true", help="Do not store or notify")
@@ -380,6 +525,16 @@ def main() -> None:
     short.add_argument("--archive-end", default="2024-01")
     short.add_argument("--reports-dir", default="reports/short_2020_2023")
     short.add_argument("--cache-dir", default=".cache/binance-perpetual")
+    trend_v030 = commands.add_parser(
+        "trend-v030-backtest",
+        help="Run frozen 0.3.0 BTC perpetual long+short trend evaluation",
+    )
+    trend_v030.add_argument("--evaluation-start", default="2020-01-01")
+    trend_v030.add_argument("--evaluation-end", default="2026-10-01")
+    trend_v030.add_argument("--archive-start", default="2020-01")
+    trend_v030.add_argument("--archive-end", default="2026-09")
+    trend_v030.add_argument("--reports-dir", default="reports/trend_v030_2020_2026ytd")
+    trend_v030.add_argument("--cache-dir", default=".cache/binance-perpetual")
     args = parser.parse_args()
     if args.command == "live":
         result = run_once(dry_run=args.dry_run, notify_watch=not args.no_watch)
@@ -404,8 +559,14 @@ def main() -> None:
             args.reports_dir,
             args.cache_dir,
         )
-    else:
+    elif args.command == "short-backtest":
         _short_backtest(
+            args.evaluation_start, args.evaluation_end,
+            args.archive_start, args.archive_end,
+            args.reports_dir, args.cache_dir,
+        )
+    else:
+        _trend_v030_backtest(
             args.evaluation_start, args.evaluation_end,
             args.archive_start, args.archive_end,
             args.reports_dir, args.cache_dir,

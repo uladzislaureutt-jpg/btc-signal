@@ -1,0 +1,62 @@
+name: Frozen BTC trend 0.3.0 evaluation 2020-2026 YTD
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/trend-v030-backtest-trigger"
+
+permissions:
+  contents: read
+
+jobs:
+  trend-v030:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.lock
+      - run: pip install --no-deps .
+      - name: Run frozen 0.3.0 evaluation and robustness surface
+        run: |
+          set -o pipefail
+          mkdir -p reports/trend_v030_2020_2026ytd
+          btc-signal trend-v030-backtest \
+            --evaluation-start 2020-01-01 \
+            --evaluation-end 2026-10-01 \
+            --archive-start 2020-01 \
+            --archive-end 2026-09 \
+            --reports-dir reports/trend_v030_2020_2026ytd \
+            | tee reports/trend_v030_2020_2026ytd/console_summary.json
+      - name: Publish evaluation summary
+        if: always()
+        run: |
+          if [ -f reports/trend_v030_2020_2026ytd/trend_v030_summary.json ]; then
+            echo '### Frozen BTC trend 0.3.0' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            jq '{primary_combined: (.primary_combined | {trades, total_r, gross_total_r, total_trading_cost_r, total_funding_r, profit_factor, max_drawdown_r, by_side, by_year, bootstrap, portfolio_diagnostics}), standalone_legs: {long: (.standalone_legs.long | {trades, total_r, profit_factor, max_drawdown_r, by_year, bootstrap}), short: (.standalone_legs.short | {trades, total_r, profit_factor, max_drawdown_r, by_year, by_regime, bootstrap})}, stress_45bps: {combined: (.stress_45bps.combined | {trades, total_r, profit_factor, max_drawdown_r, bootstrap}), long: (.stress_45bps.long | {trades, total_r, profit_factor}), short: (.stress_45bps.short | {trades, total_r, profit_factor, bootstrap})}, success_criteria}' reports/trend_v030_2020_2026ytd/trend_v030_summary.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Publish robustness summary
+        if: always()
+        run: |
+          if [ -f reports/trend_v030_2020_2026ytd/trend_v030_sensitivity.json ]; then
+            echo '### Frozen robustness surface' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            jq '{method, scenario_count, positive_scenarios, positive_share, primary_parameters, primary_replay, primary_verification, by_cost_bps}' reports/trend_v030_2020_2026ytd/trend_v030_sensitivity.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload independently reviewable reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: btc-trend-v030-2020-2026ytd-run-${{ github.run_number }}
+          path: reports/trend_v030_2020_2026ytd/
+          if-no-files-found: error
+          retention-days: 30
