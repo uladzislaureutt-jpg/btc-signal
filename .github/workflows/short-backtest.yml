@@ -25,6 +25,7 @@ jobs:
       - run: pip install --no-deps .
       - name: Run frozen perpetual short holdout
         run: |
+          set -o pipefail
           mkdir -p reports/short_2020_2023
           btc-signal short-backtest \
             --evaluation-start 2020-01-01 \

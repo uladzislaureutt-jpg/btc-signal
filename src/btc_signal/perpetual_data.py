@@ -69,6 +69,8 @@ def parse_perpetual_kline_zip(payload: bytes) -> pd.DataFrame:
     frame = pd.read_csv(io.BytesIO(_single_csv(payload)), header=None, names=KLINE_COLUMNS)
     if frame.empty:
         raise ValueError("Perpetual kline archive contains no rows")
+    if str(frame.iloc[0]["open_time"]).strip().lower() in {"open_time", "opentime"}:
+        frame = frame.iloc[1:].reset_index(drop=True)
     for column in ("open", "high", "low", "close", "volume"):
         frame[column] = pd.to_numeric(frame[column], errors="raise")
     frame["open_time"] = _timestamp(frame["open_time"])

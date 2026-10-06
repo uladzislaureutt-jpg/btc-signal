@@ -23,6 +23,17 @@ def test_parse_perpetual_kline_archive():
     assert frame.loc[0, "close"] == 102
 
 
+def test_parse_perpetual_kline_archive_with_header():
+    payload = _zip(
+        "BTCUSDT-1h-2020-01.csv",
+        "open_time,open,high,low,close,volume,close_time,quote_volume,count,taker_buy_volume,taker_buy_quote_volume,ignore\n"
+        "1577836800000,100,105,95,102,10,1577840399999,0,1,0,0,0\n",
+    )
+    frame = parse_perpetual_kline_zip(payload)
+    assert len(frame) == 1
+    assert frame.loc[0, "open"] == 100
+
+
 def test_parse_funding_archive_with_official_headers():
     payload = _zip(
         "BTCUSDT-fundingRate-2020-01.csv",
