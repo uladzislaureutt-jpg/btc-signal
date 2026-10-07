@@ -108,6 +108,13 @@ trend_bidirectional:
   regime_lookback_days: 180
   regime_threshold: 0.15
 
+# Operational early-short overlay. It does not alter the frozen 0.3.0
+# research engine; it emits an earlier live SHORT when the 20-bar floor is
+# decisively broken before price has crossed below EMA200.
+early_short:
+  enabled: true
+  min_breakout_atr: 0.25
+
 weights:
   level_quality: 30
   regime: 20

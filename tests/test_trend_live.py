@@ -29,7 +29,7 @@ def test_long_signal_contains_entry_stop_targets_and_trailing_plan():
     assert decision.entry_low == decision.entry_high == 55_000.0
     assert decision.stop < decision.entry_low < decision.target_1 < decision.target_2
     assert decision.factors["exit_plan"]["trailing_distance_atr"] == 3.0
-    assert decision.strategy_version == "0.3.1"
+    assert decision.strategy_version == "0.3.2"
 
 
 def test_short_signal_has_reversed_price_geometry():
@@ -39,6 +39,24 @@ def test_short_signal_has_reversed_price_geometry():
     assert decision.state == "signal"
     assert decision.side == "short"
     assert decision.stop > decision.entry_low > decision.target_1 > decision.target_2
+
+
+def test_early_short_fires_on_decisive_20_bar_breakdown_above_ema200():
+    frame = candles(260, freq="4h", trend=30.0)
+    frame["high"] = frame["close"] + 900.0
+    frame["low"] = frame["close"] - 900.0
+    prior_low = frame["low"].iloc[-21:-1].min()
+    frame.loc[frame.index[-1], "close"] = prior_low - 600.0
+    frame.loc[frame.index[-1], "high"] = frame["close"].iloc[-1] + 900.0
+    frame.loc[frame.index[-1], "low"] = frame["close"].iloc[-1] - 900.0
+    now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
+    decision = evaluate_trend_signal(frame, config(), "test_perpetual", 55_000.0, now=now)
+    assert decision.state == "signal"
+    assert decision.side == "short"
+    assert decision.regime == "early_short_above_ema200"
+    assert decision.level["type"] == "donchian_early_breakdown"
+    assert decision.factors["early_short"]["breakout_atr"] >= 0.25
+    assert decision.strategy_version == "0.3.2"
 
 
 def test_stale_breakout_is_not_emitted():

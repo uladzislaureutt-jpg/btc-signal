@@ -32,7 +32,7 @@ def _neutral(
         factors=factors,
         vetoes=vetoes,
         provider=provider,
-        strategy_version="0.3.1",
+        strategy_version="0.3.2",
     )
 
 
@@ -61,6 +61,9 @@ def evaluate_trend_signal(
     min_risk_to_cost = float(raw["min_risk_to_cost"])
     target_1_r = float(raw.get("reference_target_1_r", 2.0))
     target_2_r = float(raw.get("reference_target_2_r", 3.0))
+    early = config.get("early_short", {})
+    early_short_enabled = bool(early.get("enabled", True))
+    early_short_min_breakout_atr = float(early.get("min_breakout_atr", 0.25))
 
     required = max(ema_period, breakout_bars, atr_period) + 2
     if len(frame_4h) < required:
@@ -119,7 +122,20 @@ def evaluate_trend_signal(
 
     long_signal = values["close"] > values["prior_high"] and values["close"] > values["ema"]
     short_signal = values["close"] < values["prior_low"] and values["close"] < values["ema"]
-    if not long_signal and not short_signal:
+    downside_breakout_atr = (values["prior_low"] - values["close"]) / values["atr"]
+    early_short_signal = (
+        early_short_enabled
+        and values["close"] < values["prior_low"]
+        and values["close"] >= values["ema"]
+        and downside_breakout_atr >= early_short_min_breakout_atr
+    )
+    base_factors["early_short"] = {
+        "enabled": early_short_enabled,
+        "breakout_atr": downside_breakout_atr,
+        "minimum_breakout_atr": early_short_min_breakout_atr,
+        "above_ema200": values["close"] >= values["ema"],
+    }
+    if not long_signal and not short_signal and not early_short_signal:
         return _neutral(
             timestamp=signal_time.isoformat(),
             price=current_price,
@@ -144,6 +160,7 @@ def evaluate_trend_signal(
         )
 
     side = "long" if long_signal else "short"
+    signal_type = "early_breakdown" if early_short_signal else "trend_breakout"
     direction = 1.0 if side == "long" else -1.0
     risk = stop_atr * values["atr"]
     stop = current_price - direction * risk
@@ -178,6 +195,8 @@ def evaluate_trend_signal(
         },
     }
     channel = values["prior_high"] if side == "long" else values["prior_low"]
+    level_type = "donchian_early_breakdown" if early_short_signal else "donchian_breakout"
+    factors["signal_type"] = {"value": signal_type}
     return Decision(
         timestamp=signal_time.isoformat(),
         state="signal",
@@ -190,10 +209,13 @@ def evaluate_trend_signal(
         target_1=target_1,
         target_2=target_2,
         rr=target_2_r,
-        regime="above_ema200" if side == "long" else "below_ema200",
-        level={"type": "donchian_breakout", "bars": breakout_bars, "price": channel},
+        regime=(
+            "early_short_above_ema200" if early_short_signal
+            else ("above_ema200" if side == "long" else "below_ema200")
+        ),
+        level={"type": level_type, "bars": breakout_bars, "price": channel},
         factors=factors,
         vetoes=[],
         provider=provider,
-        strategy_version="0.3.1",
+        strategy_version="0.3.2",
     )

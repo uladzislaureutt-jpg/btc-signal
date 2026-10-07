@@ -37,7 +37,7 @@ class Decision:
 
     @property
     def dedup_key(self) -> str:
-        if self.strategy_version == "0.3.1":
+        if self.strategy_version in {"0.3.1", "0.3.2"}:
             identity = [
                 self.strategy_version,
                 self.timestamp,
