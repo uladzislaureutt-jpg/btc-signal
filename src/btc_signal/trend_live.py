@@ -32,7 +32,7 @@ def _neutral(
         factors=factors,
         vetoes=vetoes,
         provider=provider,
-        strategy_version="0.3.2",
+        strategy_version="0.3.3",
     )
 
 
@@ -64,6 +64,11 @@ def evaluate_trend_signal(
     early = config.get("early_short", {})
     early_short_enabled = bool(early.get("enabled", True))
     early_short_min_breakout_atr = float(early.get("min_breakout_atr", 0.25))
+    early_close_bars = int(early.get("close_breakout_bars", 6))
+    early_min_close_breakout_atr = float(early.get("min_close_breakout_atr", 0.10))
+    early_momentum_bars = int(early.get("momentum_bars", 3))
+    early_min_momentum_atr = float(early.get("min_momentum_atr", 0.75))
+    early_min_lower_closes = int(early.get("min_lower_closes", 2))
 
     required = max(ema_period, breakout_bars, atr_period) + 2
     if len(frame_4h) < required:
@@ -81,6 +86,7 @@ def evaluate_trend_signal(
     frame["atr"] = atr(frame, atr_period)
     frame["prior_high"] = frame["high"].shift(1).rolling(breakout_bars).max()
     frame["prior_low"] = frame["low"].shift(1).rolling(breakout_bars).min()
+    frame["prior_close_low"] = frame["close"].shift(1).rolling(early_close_bars).min()
     latest = frame.iloc[-1]
     open_time = pd.Timestamp(frame.index[-1])
     close_time = latest.get("close_time")
@@ -100,12 +106,14 @@ def evaluate_trend_signal(
         "atr": float(latest["atr"]),
         "prior_high": float(latest["prior_high"]),
         "prior_low": float(latest["prior_low"]),
+        "prior_close_low": float(latest["prior_close_low"]),
     }
     base_factors: dict[str, dict[str, object]] = {
         "breakout": {
             "close": values["close"],
             "prior_high": values["prior_high"],
             "prior_low": values["prior_low"],
+            "prior_close_low": values["prior_close_low"],
             "bars": breakout_bars,
         },
         "trend": {"close": values["close"], "ema": values["ema"], "period": ema_period},
@@ -122,17 +130,45 @@ def evaluate_trend_signal(
 
     long_signal = values["close"] > values["prior_high"] and values["close"] > values["ema"]
     short_signal = values["close"] < values["prior_low"] and values["close"] < values["ema"]
+
     downside_breakout_atr = (values["prior_low"] - values["close"]) / values["atr"]
+    close_breakout_atr = (values["prior_close_low"] - values["close"]) / values["atr"]
+    momentum_reference = float(frame["close"].iloc[-1 - early_momentum_bars])
+    momentum_atr = (momentum_reference - values["close"]) / values["atr"]
+    recent_closes = frame["close"].iloc[-1 - early_momentum_bars :].astype(float)
+    lower_closes = int((recent_closes.diff().dropna() < 0).sum())
+    wick_breakdown = (
+        values["close"] < values["prior_low"]
+        and downside_breakout_atr >= early_short_min_breakout_atr
+    )
+    close_breakdown = (
+        values["close"] < values["prior_close_low"]
+        and close_breakout_atr >= early_min_close_breakout_atr
+    )
+    momentum_breakdown = (
+        momentum_atr >= early_min_momentum_atr
+        and lower_closes >= early_min_lower_closes
+    )
     early_short_signal = (
         early_short_enabled
-        and values["close"] < values["prior_low"]
         and values["close"] >= values["ema"]
-        and downside_breakout_atr >= early_short_min_breakout_atr
+        and (wick_breakdown or close_breakdown or momentum_breakdown)
     )
     base_factors["early_short"] = {
         "enabled": early_short_enabled,
-        "breakout_atr": downside_breakout_atr,
-        "minimum_breakout_atr": early_short_min_breakout_atr,
+        "wick_breakout_atr": downside_breakout_atr,
+        "minimum_wick_breakout_atr": early_short_min_breakout_atr,
+        "close_breakout_atr": close_breakout_atr,
+        "minimum_close_breakout_atr": early_min_close_breakout_atr,
+        "close_breakout_bars": early_close_bars,
+        "momentum_atr": momentum_atr,
+        "minimum_momentum_atr": early_min_momentum_atr,
+        "momentum_bars": early_momentum_bars,
+        "lower_closes": lower_closes,
+        "minimum_lower_closes": early_min_lower_closes,
+        "wick_breakdown": wick_breakdown,
+        "close_breakdown": close_breakdown,
+        "momentum_breakdown": momentum_breakdown,
         "above_ema200": values["close"] >= values["ema"],
     }
     if not long_signal and not short_signal and not early_short_signal:
@@ -160,7 +196,15 @@ def evaluate_trend_signal(
         )
 
     side = "long" if long_signal else "short"
-    signal_type = "early_breakdown" if early_short_signal else "trend_breakout"
+    if early_short_signal:
+        if close_breakdown:
+            signal_type = "early_close_breakdown"
+        elif momentum_breakdown:
+            signal_type = "early_momentum_breakdown"
+        else:
+            signal_type = "early_wick_breakdown"
+    else:
+        signal_type = "trend_breakout"
     direction = 1.0 if side == "long" else -1.0
     risk = stop_atr * values["atr"]
     stop = current_price - direction * risk
@@ -194,8 +238,15 @@ def evaluate_trend_signal(
             "target_2_is_reference": True,
         },
     }
-    channel = values["prior_high"] if side == "long" else values["prior_low"]
-    level_type = "donchian_early_breakdown" if early_short_signal else "donchian_breakout"
+    if side == "long":
+        channel = values["prior_high"]
+    elif early_short_signal and close_breakdown:
+        channel = values["prior_close_low"]
+    elif early_short_signal and momentum_breakdown:
+        channel = momentum_reference
+    else:
+        channel = values["prior_low"]
+    level_type = "early_short" if early_short_signal else "donchian_breakout"
     factors["signal_type"] = {"value": signal_type}
     return Decision(
         timestamp=signal_time.isoformat(),
@@ -217,5 +268,5 @@ def evaluate_trend_signal(
         factors=factors,
         vetoes=[],
         provider=provider,
-        strategy_version="0.3.2",
+        strategy_version="0.3.3",
     )

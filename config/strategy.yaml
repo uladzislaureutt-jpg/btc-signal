@@ -109,11 +109,16 @@ trend_bidirectional:
   regime_threshold: 0.15
 
 # Operational early-short overlay. It does not alter the frozen 0.3.0
-# research engine; it emits an earlier live SHORT when the 20-bar floor is
-# decisively broken before price has crossed below EMA200.
+# research engine. Besides a decisive 20-bar wick-floor break, it detects
+# close-based breaks and multi-candle downside momentum above EMA200.
 early_short:
   enabled: true
   min_breakout_atr: 0.25
+  close_breakout_bars: 6
+  min_close_breakout_atr: 0.10
+  momentum_bars: 3
+  min_momentum_atr: 0.75
+  min_lower_closes: 2
 
 weights:
   level_quality: 30
