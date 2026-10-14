@@ -101,14 +101,14 @@ def test_early_short_remains_valid_below_ema200_before_20_bar_low_breaks():
     frame["high"] = frame["close"] + 700.0
     frame["low"] = frame["close"] - 700.0
     base = float(frame["close"].iloc[-4])
-    stair = [base - 350.0, base - 900.0, base - 1700.0]
+    stair = [base - 500.0, base - 1600.0, base - 3200.0]
     for offset, close in zip((-3, -2, -1), stair):
         idx = frame.index[offset]
         frame.loc[idx, "close"] = close
         frame.loc[idx, "high"] = close + 400.0
         frame.loc[idx, "low"] = close - 400.0
     old_idx = frame.index[-10]
-    frame.loc[old_idx, "low"] = stair[-1] - 1400.0
+    frame.loc[old_idx, "low"] = stair[-1] - 1600.0
     now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
     decision = evaluate_trend_signal(frame, config(), "test_perpetual", stair[-1], now=now)
     assert decision.state == "signal"
