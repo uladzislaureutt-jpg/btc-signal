@@ -32,7 +32,7 @@ def _neutral(
         factors=factors,
         vetoes=vetoes,
         provider=provider,
-        strategy_version="0.3.3",
+        strategy_version="0.3.4",
     )
 
 
@@ -62,13 +62,21 @@ def evaluate_trend_signal(
     target_1_r = float(raw.get("reference_target_1_r", 2.0))
     target_2_r = float(raw.get("reference_target_2_r", 3.0))
     early = config.get("early_short", {})
+    early_long = config.get("early_long", early)
     early_short_enabled = bool(early.get("enabled", True))
+    early_long_enabled = bool(early_long.get("enabled", True))
     early_short_min_breakout_atr = float(early.get("min_breakout_atr", 0.25))
     early_close_bars = int(early.get("close_breakout_bars", 6))
     early_min_close_breakout_atr = float(early.get("min_close_breakout_atr", 0.10))
     early_momentum_bars = int(early.get("momentum_bars", 3))
     early_min_momentum_atr = float(early.get("min_momentum_atr", 0.75))
     early_min_lower_closes = int(early.get("min_lower_closes", 2))
+    early_long_min_breakout_atr = float(early_long.get("min_breakout_atr", 0.25))
+    early_long_close_bars = int(early_long.get("close_breakout_bars", 6))
+    early_long_min_close_breakout_atr = float(early_long.get("min_close_breakout_atr", 0.10))
+    early_long_momentum_bars = int(early_long.get("momentum_bars", 3))
+    early_long_min_momentum_atr = float(early_long.get("min_momentum_atr", 0.75))
+    early_long_min_higher_closes = int(early_long.get("min_higher_closes", 2))
 
     required = max(ema_period, breakout_bars, atr_period) + 2
     if len(frame_4h) < required:
@@ -87,6 +95,7 @@ def evaluate_trend_signal(
     frame["prior_high"] = frame["high"].shift(1).rolling(breakout_bars).max()
     frame["prior_low"] = frame["low"].shift(1).rolling(breakout_bars).min()
     frame["prior_close_low"] = frame["close"].shift(1).rolling(early_close_bars).min()
+    frame["prior_close_high"] = frame["close"].shift(1).rolling(early_long_close_bars).max()
     latest = frame.iloc[-1]
     open_time = pd.Timestamp(frame.index[-1])
     close_time = latest.get("close_time")
@@ -107,6 +116,7 @@ def evaluate_trend_signal(
         "prior_high": float(latest["prior_high"]),
         "prior_low": float(latest["prior_low"]),
         "prior_close_low": float(latest["prior_close_low"]),
+        "prior_close_high": float(latest["prior_close_high"]),
     }
     base_factors: dict[str, dict[str, object]] = {
         "breakout": {
@@ -114,6 +124,7 @@ def evaluate_trend_signal(
             "prior_high": values["prior_high"],
             "prior_low": values["prior_low"],
             "prior_close_low": values["prior_close_low"],
+            "prior_close_high": values["prior_close_high"],
             "bars": breakout_bars,
         },
         "trend": {"close": values["close"], "ema": values["ema"], "period": ema_period},
@@ -151,7 +162,7 @@ def evaluate_trend_signal(
     )
     early_short_signal = (
         early_short_enabled
-        and values["close"] >= values["ema"]
+        and not short_signal
         and (wick_breakdown or close_breakdown or momentum_breakdown)
     )
     base_factors["early_short"] = {
@@ -171,7 +182,48 @@ def evaluate_trend_signal(
         "momentum_breakdown": momentum_breakdown,
         "above_ema200": values["close"] >= values["ema"],
     }
-    if not long_signal and not short_signal and not early_short_signal:
+    upside_breakout_atr = (values["close"] - values["prior_high"]) / values["atr"]
+    close_up_breakout_atr = (values["close"] - values["prior_close_high"]) / values["atr"]
+    long_momentum_reference = float(frame["close"].iloc[-1 - early_long_momentum_bars])
+    long_momentum_atr = (values["close"] - long_momentum_reference) / values["atr"]
+    recent_long_closes = frame["close"].iloc[-1 - early_long_momentum_bars :].astype(float)
+    higher_closes = int((recent_long_closes.diff().dropna() > 0).sum())
+    wick_up_breakout = (
+        values["close"] > values["prior_high"]
+        and upside_breakout_atr >= early_long_min_breakout_atr
+    )
+    close_up_breakout = (
+        values["close"] > values["prior_close_high"]
+        and close_up_breakout_atr >= early_long_min_close_breakout_atr
+    )
+    momentum_up_breakout = (
+        long_momentum_atr >= early_long_min_momentum_atr
+        and higher_closes >= early_long_min_higher_closes
+    )
+    early_long_signal = (
+        early_long_enabled
+        and values["close"] >= values["ema"]
+        and not long_signal
+        and (wick_up_breakout or close_up_breakout or momentum_up_breakout)
+    )
+    base_factors["early_long"] = {
+        "enabled": early_long_enabled,
+        "wick_breakout_atr": upside_breakout_atr,
+        "minimum_wick_breakout_atr": early_long_min_breakout_atr,
+        "close_breakout_atr": close_up_breakout_atr,
+        "minimum_close_breakout_atr": early_long_min_close_breakout_atr,
+        "close_breakout_bars": early_long_close_bars,
+        "momentum_atr": long_momentum_atr,
+        "minimum_momentum_atr": early_long_min_momentum_atr,
+        "momentum_bars": early_long_momentum_bars,
+        "higher_closes": higher_closes,
+        "minimum_higher_closes": early_long_min_higher_closes,
+        "wick_breakout": wick_up_breakout,
+        "close_breakout": close_up_breakout,
+        "momentum_breakout": momentum_up_breakout,
+        "above_ema200": values["close"] >= values["ema"],
+    }
+    if not long_signal and not short_signal and not early_short_signal and not early_long_signal:
         return _neutral(
             timestamp=signal_time.isoformat(),
             price=current_price,
@@ -195,8 +247,15 @@ def evaluate_trend_signal(
             factors=base_factors,
         )
 
-    side = "long" if long_signal else "short"
-    if early_short_signal:
+    side = "long" if (long_signal or early_long_signal) else "short"
+    if early_long_signal:
+        if close_up_breakout:
+            signal_type = "early_close_breakout_long"
+        elif momentum_up_breakout:
+            signal_type = "early_momentum_breakout_long"
+        else:
+            signal_type = "early_wick_breakout_long"
+    elif early_short_signal:
         if close_breakdown:
             signal_type = "early_close_breakdown"
         elif momentum_breakdown:
@@ -238,7 +297,11 @@ def evaluate_trend_signal(
             "target_2_is_reference": True,
         },
     }
-    if side == "long":
+    if early_long_signal and close_up_breakout:
+        channel = values["prior_close_high"]
+    elif early_long_signal and momentum_up_breakout:
+        channel = long_momentum_reference
+    elif side == "long":
         channel = values["prior_high"]
     elif early_short_signal and close_breakdown:
         channel = values["prior_close_low"]
@@ -246,7 +309,7 @@ def evaluate_trend_signal(
         channel = momentum_reference
     else:
         channel = values["prior_low"]
-    level_type = "early_short" if early_short_signal else "donchian_breakout"
+    level_type = "early_long" if early_long_signal else ("early_short" if early_short_signal else "donchian_breakout")
     factors["signal_type"] = {"value": signal_type}
     return Decision(
         timestamp=signal_time.isoformat(),
@@ -261,12 +324,16 @@ def evaluate_trend_signal(
         target_2=target_2,
         rr=target_2_r,
         regime=(
-            "early_short_above_ema200" if early_short_signal
-            else ("above_ema200" if side == "long" else "below_ema200")
+            "early_long_above_ema200" if early_long_signal
+            else (
+                ("early_short_above_ema200" if values["close"] >= values["ema"] else "early_short_below_ema200")
+                if early_short_signal
+                else ("above_ema200" if side == "long" else "below_ema200")
+            )
         ),
         level={"type": level_type, "bars": breakout_bars, "price": channel},
         factors=factors,
         vetoes=[],
         provider=provider,
-        strategy_version="0.3.3",
+        strategy_version="0.3.4",
     )
