@@ -100,7 +100,7 @@ trend_bidirectional:
   initial_stop_atr: 2.0
   trailing_atr: 3.0
   trailing_activation_atr: 1.0
-  min_risk_to_cost: 8.0
+  min_risk_to_cost: 4.0
   max_holding_days: 60
   round_trip_cost_bps: 30
   reference_target_1_r: 2.0
@@ -109,8 +109,8 @@ trend_bidirectional:
   regime_threshold: 0.15
 
 # Operational early-short overlay. It does not alter the frozen 0.3.0
-# research engine. Besides a decisive 20-bar wick-floor break, it detects
-# close-based breaks and multi-candle downside momentum above EMA200.
+# research engine. EMA200 classifies the regime but no longer blocks a valid
+# close/momentum breakdown after price crosses below it.
 early_short:
   enabled: true
   min_breakout_atr: 0.25
@@ -119,6 +119,16 @@ early_short:
   momentum_bars: 3
   min_momentum_atr: 0.75
   min_lower_closes: 2
+
+# Symmetric early-long overlay for recoveries before the slower 20-bar high is cleared.
+early_long:
+  enabled: true
+  min_breakout_atr: 0.25
+  close_breakout_bars: 6
+  min_close_breakout_atr: 0.10
+  momentum_bars: 3
+  min_momentum_atr: 0.75
+  min_higher_closes: 2
 
 weights:
   level_quality: 30

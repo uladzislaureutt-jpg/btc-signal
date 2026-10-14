@@ -29,7 +29,7 @@ def test_long_signal_contains_entry_stop_targets_and_trailing_plan():
     assert decision.entry_low == decision.entry_high == 55_000.0
     assert decision.stop < decision.entry_low < decision.target_1 < decision.target_2
     assert decision.factors["exit_plan"]["trailing_distance_atr"] == 3.0
-    assert decision.strategy_version == "0.3.3"
+    assert decision.strategy_version == "0.3.4"
 
 
 def test_short_signal_has_reversed_price_geometry():
@@ -56,7 +56,7 @@ def test_early_short_fires_on_decisive_20_bar_breakdown_above_ema200():
     assert decision.regime == "early_short_above_ema200"
     assert decision.level["type"] == "early_short"
     assert decision.factors["early_short"]["wick_breakout_atr"] >= 0.25
-    assert decision.strategy_version == "0.3.3"
+    assert decision.strategy_version == "0.3.4"
 
 
 def test_early_short_detects_stair_step_decline_even_when_wick_floor_moves():
@@ -94,6 +94,67 @@ def test_small_drift_does_not_trigger_early_short():
     now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
     decision = evaluate_trend_signal(frame, config(), "test_perpetual", base - 80.0, now=now)
     assert decision.state == "neutral"
+
+
+def test_early_short_remains_valid_below_ema200_before_20_bar_low_breaks():
+    frame = candles(260, freq="4h", trend=20.0)
+    frame["high"] = frame["close"] + 700.0
+    frame["low"] = frame["close"] - 700.0
+    base = float(frame["close"].iloc[-4])
+    stair = [base - 500.0, base - 1600.0, base - 3200.0]
+    for offset, close in zip((-3, -2, -1), stair):
+        idx = frame.index[offset]
+        frame.loc[idx, "close"] = close
+        frame.loc[idx, "high"] = close + 400.0
+        frame.loc[idx, "low"] = close - 400.0
+    old_idx = frame.index[-10]
+    frame.loc[old_idx, "low"] = stair[-1] - 1600.0
+    now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
+    decision = evaluate_trend_signal(frame, config(), "test_perpetual", stair[-1], now=now)
+    assert decision.state == "signal"
+    assert decision.side == "short"
+    assert decision.regime == "early_short_below_ema200"
+    assert decision.level["type"] == "early_short"
+    assert (
+        decision.factors["early_short"]["close_breakdown"]
+        or decision.factors["early_short"]["momentum_breakdown"]
+    )
+
+
+def test_early_long_detects_stair_step_recovery_before_20_bar_high():
+    frame = candles(260, freq="4h", trend=5.0)
+    frame["high"] = frame["close"] + 900.0
+    frame["low"] = frame["close"] - 900.0
+    base = float(frame["close"].iloc[-4])
+    stair = [base + 180.0, base + 430.0, base + 820.0]
+    for offset, close in zip((-3, -2, -1), stair):
+        idx = frame.index[offset]
+        frame.loc[idx, "close"] = close
+        frame.loc[idx, "high"] = close + 250.0
+        frame.loc[idx, "low"] = close - 250.0
+    old_idx = frame.index[-10]
+    frame.loc[old_idx, "high"] = stair[-1] + 1200.0
+    now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
+    decision = evaluate_trend_signal(frame, config(), "test_perpetual", stair[-1], now=now)
+    assert decision.state == "signal"
+    assert decision.side == "long"
+    assert decision.regime == "early_long_above_ema200"
+    assert decision.level["type"] == "early_long"
+    assert (
+        decision.factors["early_long"]["close_breakout"]
+        or decision.factors["early_long"]["momentum_breakout"]
+    )
+
+
+def test_live_cost_filter_accepts_ratio_above_four():
+    frame = _breakout_frame("long")
+    cfg = config()
+    cfg["trend_bidirectional"]["min_risk_to_cost"] = 4.0
+    now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
+    decision = evaluate_trend_signal(frame, cfg, "test_perpetual", 80_000.0, now=now)
+    assert decision.state == "signal"
+    assert decision.factors["cost_filter"]["minimum"] == 4.0
+
 
 
 def test_stale_breakout_is_not_emitted():
