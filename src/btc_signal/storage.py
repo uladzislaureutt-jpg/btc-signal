@@ -15,6 +15,7 @@ from .strategy import Decision
 class Store(Protocol):
     def seen(self, dedup_key: str) -> bool: ...
     def cooldown_active(self, candle_time: str, hours: int) -> bool: ...
+    def same_side_episode_active(self, side: str, candle_time: str, hours: int) -> bool: ...
     def save(self, decision: Decision, notified: bool) -> None: ...
 
 
@@ -58,6 +59,19 @@ class SQLiteStore:
             (threshold.isoformat(),),
         ).fetchone()
         return row is not None
+
+    def same_side_episode_active(self, side: str, candle_time: str, hours: int) -> bool:
+        threshold = datetime.fromisoformat(candle_time).astimezone(timezone.utc) - timedelta(hours=hours)
+        row = self.connection.execute(
+            """
+            select side from signals
+            where state in ('signal', 'strong_signal') and candle_time >= ?
+            order by candle_time desc
+            limit 1
+            """,
+            (threshold.isoformat(),),
+        ).fetchone()
+        return bool(row and row[0] == side)
 
     def save(self, decision: Decision, notified: bool) -> None:
         self.connection.execute(
@@ -118,6 +132,24 @@ class SupabaseStore:
         )
         response.raise_for_status()
         return bool(response.json())
+
+    def same_side_episode_active(self, side: str, candle_time: str, hours: int) -> bool:
+        threshold = datetime.fromisoformat(candle_time).astimezone(timezone.utc) - timedelta(hours=hours)
+        response = requests.get(
+            self.endpoint,
+            headers=self.headers,
+            params={
+                "state": "in.(signal,strong_signal)",
+                "candle_time": f"gte.{threshold.isoformat()}",
+                "select": "side,candle_time",
+                "order": "candle_time.desc",
+                "limit": 1,
+            },
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        return bool(rows and rows[0].get("side") == side)
 
     def save(self, decision: Decision, notified: bool) -> None:
         payload = decision.to_dict()
