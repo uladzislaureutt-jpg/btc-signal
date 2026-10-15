@@ -29,7 +29,7 @@ def test_long_signal_contains_entry_stop_targets_and_trailing_plan():
     assert decision.entry_low == decision.entry_high == 55_000.0
     assert decision.stop < decision.entry_low < decision.target_1 < decision.target_2
     assert decision.factors["exit_plan"]["trailing_distance_atr"] == 3.0
-    assert decision.strategy_version == "0.3.4"
+    assert decision.strategy_version == "0.3.5"
 
 
 def test_short_signal_has_reversed_price_geometry():
@@ -50,13 +50,15 @@ def test_early_short_fires_on_decisive_20_bar_breakdown_above_ema200():
     frame.loc[frame.index[-1], "high"] = frame["close"].iloc[-1] + 900.0
     frame.loc[frame.index[-1], "low"] = frame["close"].iloc[-1] - 900.0
     now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
-    decision = evaluate_trend_signal(frame, config(), "test_perpetual", 55_000.0, now=now)
+    cfg = config()
+    cfg["structure"]["late_entry_max_room_atr"] = 0.0
+    decision = evaluate_trend_signal(frame, cfg, "test_perpetual", 55_000.0, now=now)
     assert decision.state == "signal"
     assert decision.side == "short"
     assert decision.regime == "early_short_above_ema200"
     assert decision.level["type"] == "early_short"
     assert decision.factors["early_short"]["wick_breakout_atr"] >= 0.25
-    assert decision.strategy_version == "0.3.4"
+    assert decision.strategy_version == "0.3.5"
 
 
 def test_early_short_detects_stair_step_decline_even_when_wick_floor_moves():
@@ -110,7 +112,9 @@ def test_early_short_remains_valid_below_ema200_before_20_bar_low_breaks():
     old_idx = frame.index[-10]
     frame.loc[old_idx, "low"] = stair[-1] - 1600.0
     now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
-    decision = evaluate_trend_signal(frame, config(), "test_perpetual", stair[-1], now=now)
+    cfg = config()
+    cfg["structure"]["late_entry_max_room_atr"] = 0.0
+    decision = evaluate_trend_signal(frame, cfg, "test_perpetual", stair[-1], now=now)
     assert decision.state == "signal"
     assert decision.side == "short"
     assert decision.regime == "early_short_below_ema200"
@@ -154,6 +158,40 @@ def test_live_cost_filter_accepts_ratio_above_four():
     decision = evaluate_trend_signal(frame, cfg, "test_perpetual", 80_000.0, now=now)
     assert decision.state == "signal"
     assert decision.factors["cost_filter"]["minimum"] == 4.0
+
+
+
+def test_structural_fibonacci_caps_short_targets_and_blocks_late_entry():
+    frame = candles(260, freq="4h", trend=0.0)
+    for column in ("open", "high", "low", "close"):
+        frame[column] = frame[column] + 30_000.0
+    # Create an ordered upswing inside the 30-day lookback: low first, high later.
+    low_idx = frame.index[-160]
+    high_idx = frame.index[-40]
+    frame.loc[low_idx, "low"] = 75_000.0
+    frame.loc[low_idx, "close"] = 75_500.0
+    frame.loc[high_idx, "high"] = 87_500.0
+    frame.loc[high_idx, "close"] = 87_000.0
+    # Keep recent volatility near the production episode (~900 ATR).
+    for idx in frame.index[-14:]:
+        close = float(frame.loc[idx, "close"])
+        frame.loc[idx, "high"] = close + 500.0
+        frame.loc[idx, "low"] = close - 500.0
+    # Current short is beyond the 50% retracement and close to the 0.618 level.
+    for offset, close in zip((-4, -3, -2, -1), (83_700.0, 82_800.0, 81_800.0, 80_900.0)):
+        idx = frame.index[offset]
+        frame.loc[idx, "open"] = close + 150.0
+        frame.loc[idx, "close"] = close
+        frame.loc[idx, "high"] = close + 500.0
+        frame.loc[idx, "low"] = close - 500.0
+    cfg = config()
+    cfg["trend_bidirectional"]["min_risk_to_cost"] = 0.0
+    now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
+    decision = evaluate_trend_signal(frame, cfg, "test_perpetual", 80_900.0, now=now)
+    assert decision.state == "neutral"
+    assert "late_entry_near_structure" in decision.vetoes
+    assert decision.factors["fibonacci"]["progress"] >= 0.5
+    assert decision.factors["fibonacci"]["room_atr"] < 1.5
 
 
 
