@@ -29,7 +29,7 @@ def test_long_signal_contains_entry_stop_targets_and_trailing_plan():
     assert decision.entry_low == decision.entry_high == 55_000.0
     assert decision.stop < decision.entry_low < decision.target_1 < decision.target_2
     assert decision.factors["exit_plan"]["trailing_distance_atr"] == 3.0
-    assert decision.strategy_version == "0.3.4"
+    assert decision.strategy_version == "0.3.5"
 
 
 def test_short_signal_has_reversed_price_geometry():
@@ -56,7 +56,7 @@ def test_early_short_fires_on_decisive_20_bar_breakdown_above_ema200():
     assert decision.regime == "early_short_above_ema200"
     assert decision.level["type"] == "early_short"
     assert decision.factors["early_short"]["wick_breakout_atr"] >= 0.25
-    assert decision.strategy_version == "0.3.4"
+    assert decision.strategy_version == "0.3.5"
 
 
 def test_early_short_detects_stair_step_decline_even_when_wick_floor_moves():
