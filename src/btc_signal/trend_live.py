@@ -7,6 +7,34 @@ from .indicators import atr, ema
 from .strategy import Decision
 
 
+def _fib_context(frame: pd.DataFrame, config: dict, price: float) -> dict[str, object]:
+    raw = config.get("structure", {})
+    lookback = int(raw.get("fib_lookback_bars", 180))
+    ratios = [float(x) for x in raw.get("fib_ratios", [0.236, 0.382, 0.5, 0.618, 0.786, 1.0])]
+    sample = frame.tail(lookback)
+    low_idx = sample["low"].idxmin()
+    high_idx = sample["high"].idxmax()
+    low = float(sample.loc[low_idx, "low"])
+    high = float(sample.loc[high_idx, "high"])
+    span = high - low
+    if span <= 0:
+        return {"direction": "flat", "low": low, "high": high, "levels": []}
+    direction = "up" if low_idx < high_idx else "down"
+    if direction == "up":
+        levels = [{"ratio": r, "price": high - span * r} for r in ratios]
+        progress = (high - price) / span
+    else:
+        levels = [{"ratio": r, "price": low + span * r} for r in ratios]
+        progress = (price - low) / span
+    return {
+        "direction": direction,
+        "low": low,
+        "high": high,
+        "progress": progress,
+        "levels": sorted(levels, key=lambda x: x["price"]),
+    }
+
+
 def _neutral(
     *,
     timestamp: str,
@@ -32,7 +60,7 @@ def _neutral(
         factors=factors,
         vetoes=vetoes,
         provider=provider,
-        strategy_version="0.3.4",
+        strategy_version="0.3.5",
     )
 
 
@@ -61,6 +89,9 @@ def evaluate_trend_signal(
     min_risk_to_cost = float(raw["min_risk_to_cost"])
     target_1_r = float(raw.get("reference_target_1_r", 2.0))
     target_2_r = float(raw.get("reference_target_2_r", 3.0))
+    structure_cfg = config.get("structure", {})
+    late_after = float(structure_cfg.get("late_entry_after_retracement", 0.50))
+    late_room_atr = float(structure_cfg.get("late_entry_max_room_atr", 1.50))
     early = config.get("early_short", {})
     early_long = config.get("early_long", early)
     early_short_enabled = bool(early.get("enabled", True))
@@ -282,12 +313,64 @@ def evaluate_trend_signal(
             },
         )
 
-    target_1 = current_price + direction * target_1_r * risk
-    target_2 = current_price + direction * target_2_r * risk
+    raw_target_1 = current_price + direction * target_1_r * risk
+    raw_target_2 = current_price + direction * target_2_r * risk
+    fib = _fib_context(frame, config, current_price)
+    fib_levels = fib.get("levels", [])
+    directional_levels = (
+        sorted([x for x in fib_levels if float(x["price"]) < current_price], key=lambda x: float(x["price"]), reverse=True)
+        if side == "short"
+        else sorted([x for x in fib_levels if float(x["price"]) > current_price], key=lambda x: float(x["price"]))
+    )
+    nearest_structure = directional_levels[0] if directional_levels else None
+    second_structure = directional_levels[1] if len(directional_levels) > 1 else None
+    room_atr = (
+        abs(current_price - float(nearest_structure["price"])) / values["atr"]
+        if nearest_structure else float("inf")
+    )
+    progress = float(fib.get("progress", 0.0))
+    matching_retracement = (
+        (side == "short" and fib.get("direction") == "up")
+        or (side == "long" and fib.get("direction") == "down")
+    )
+    if matching_retracement and progress >= late_after and room_atr < late_room_atr:
+        return _neutral(
+            timestamp=signal_time.isoformat(),
+            price=current_price,
+            provider=provider,
+            vetoes=["late_entry_near_structure"],
+            factors={
+                **base_factors,
+                "cost_filter": {"risk_to_cost": risk_to_cost, "minimum": min_risk_to_cost},
+                "fibonacci": {
+                    **fib,
+                    "nearest_level": nearest_structure,
+                    "room_atr": room_atr,
+                    "late_entry_after": late_after,
+                    "minimum_room_atr": late_room_atr,
+                },
+            },
+        )
+    if side == "short":
+        target_1 = max(raw_target_1, float(nearest_structure["price"])) if nearest_structure else raw_target_1
+        target_2 = max(raw_target_2, float(second_structure["price"])) if second_structure else raw_target_2
+    else:
+        target_1 = min(raw_target_1, float(nearest_structure["price"])) if nearest_structure else raw_target_1
+        target_2 = min(raw_target_2, float(second_structure["price"])) if second_structure else raw_target_2
     activation = current_price + direction * activation_atr * values["atr"]
     factors = {
         **base_factors,
         "cost_filter": {"risk_to_cost": risk_to_cost, "minimum": min_risk_to_cost},
+        "fibonacci": {
+            **fib,
+            "nearest_level": nearest_structure,
+            "second_level": second_structure,
+            "room_atr": room_atr,
+            "raw_target_1": raw_target_1,
+            "raw_target_2": raw_target_2,
+            "target_1_structured": target_1,
+            "target_2_structured": target_2,
+        },
         "exit_plan": {
             "mode": "atr_trailing",
             "activation_price": activation,
@@ -335,5 +418,5 @@ def evaluate_trend_signal(
         factors=factors,
         vetoes=[],
         provider=provider,
-        strategy_version="0.3.4",
+        strategy_version="0.3.5",
     )
