@@ -41,6 +41,16 @@ def run_once(dry_run: bool = False, notify_watch: bool = True) -> RunResult:
         decision.vetoes.append("cooldown_active")
         decision.state = "neutral"
         duplicate = store.seen(decision.dedup_key)
+    episode_hours = int(config.get("structure", {}).get("episode_hours", 24))
+    if (
+        not duplicate
+        and decision.state in ("signal", "strong_signal")
+        and decision.side
+        and store.same_side_episode_active(decision.side, decision.timestamp, episode_hours)
+    ):
+        decision.vetoes.append("same_side_episode_active")
+        decision.state = "neutral"
+        duplicate = store.seen(decision.dedup_key)
     should_notify = decision.state in ("signal", "strong_signal") or (
         notify_watch and decision.state == "watch"
     )
