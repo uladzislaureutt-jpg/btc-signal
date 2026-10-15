@@ -163,19 +163,27 @@ def test_live_cost_filter_accepts_ratio_above_four():
 
 def test_structural_fibonacci_caps_short_targets_and_blocks_late_entry():
     frame = candles(260, freq="4h", trend=0.0)
+    for column in ("open", "high", "low", "close"):
+        frame[column] = frame[column] + 30_000.0
     # Create an ordered upswing inside the 30-day lookback: low first, high later.
     low_idx = frame.index[-160]
     high_idx = frame.index[-40]
     frame.loc[low_idx, "low"] = 75_000.0
     frame.loc[low_idx, "close"] = 75_500.0
-    frame.loc[high_idx, "high"] = 86_500.0
-    frame.loc[high_idx, "close"] = 86_000.0
-    # Current short is just beyond the 50% retracement and close to the 0.618 level.
+    frame.loc[high_idx, "high"] = 87_500.0
+    frame.loc[high_idx, "close"] = 87_000.0
+    # Keep recent volatility near the production episode (~900 ATR).
+    for idx in frame.index[-14:]:
+        close = float(frame.loc[idx, "close"])
+        frame.loc[idx, "high"] = close + 500.0
+        frame.loc[idx, "low"] = close - 500.0
+    # Current short is beyond the 50% retracement and close to the 0.618 level.
     for offset, close in zip((-4, -3, -2, -1), (83_700.0, 82_800.0, 81_800.0, 80_900.0)):
         idx = frame.index[offset]
+        frame.loc[idx, "open"] = close + 150.0
         frame.loc[idx, "close"] = close
-        frame.loc[idx, "high"] = close + 350.0
-        frame.loc[idx, "low"] = close - 350.0
+        frame.loc[idx, "high"] = close + 500.0
+        frame.loc[idx, "low"] = close - 500.0
     cfg = config()
     cfg["trend_bidirectional"]["min_risk_to_cost"] = 0.0
     now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
@@ -183,6 +191,7 @@ def test_structural_fibonacci_caps_short_targets_and_blocks_late_entry():
     assert decision.state == "neutral"
     assert "late_entry_near_structure" in decision.vetoes
     assert decision.factors["fibonacci"]["progress"] >= 0.5
+    assert decision.factors["fibonacci"]["room_atr"] < 1.5
 
 
 
