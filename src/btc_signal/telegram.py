@@ -20,14 +20,14 @@ def format_decision(decision: Decision) -> str:
         f"📈 <b>BTCUSDT PERPETUAL · {side}</b>\n\n"
         f"Вход: <b>{_money(entry)}</b>\n"
         f"Стоп-лосс: <b>{_money(decision.stop)}</b>\n"
-        f"TP1 (ориентир 2R): {_money(decision.target_1)}\n"
-        f"TP2 (ориентир 3R): {_money(decision.target_2)}\n\n"
+        f"TP1: {_money(decision.target_1)}\n"
+        f"TP2: {_money(decision.target_2)}\n\n"
         f"Пробой 4H: {_money(breakout.get('price'))}\n"
         f"Трейлинг включить от: {_money(exit_plan.get('activation_price'))}\n"
         f"Дистанция трейлинга: {exit_plan.get('trailing_distance_atr', '—')} ATR(4H)\n"
         f"Источник: {decision.provider or '—'}\n"
         f"Свеча закрыта: {decision.timestamp}\n\n"
-        f"<i>Основной выход — трейлинг; TP1/TP2 являются ценовыми ориентирами. "
+        f"<i>Основной выход — трейлинг; TP1/TP2 учитывают ближайшую рыночную структуру. "
         f"Сигнал не исполняет ордер автоматически.</i>"
     )
 
