@@ -108,6 +108,13 @@ trend_bidirectional:
   regime_lookback_days: 180
   regime_threshold: 0.15
 
+structure:
+  fib_lookback_bars: 180
+  fib_ratios: [0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+  late_entry_after_retracement: 0.50
+  late_entry_max_room_atr: 1.50
+  episode_hours: 24
+
 # Operational early-short overlay. It does not alter the frozen 0.3.0
 # research engine. EMA200 classifies the regime but no longer blocks a valid
 # close/momentum breakdown after price crosses below it.
