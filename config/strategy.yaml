@@ -113,6 +113,8 @@ structure:
   fib_ratios: [0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
   late_entry_after_retracement: 0.50
   late_entry_max_room_atr: 1.50
+  minimum_tp1_r: 1.0
+  minimum_tp2_r: 1.5
   episode_hours: 24
 
 # Operational early-short overlay. It does not alter the frozen 0.3.0
