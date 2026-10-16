@@ -29,7 +29,7 @@ def test_long_signal_contains_entry_stop_targets_and_trailing_plan():
     assert decision.entry_low == decision.entry_high == 55_000.0
     assert decision.stop < decision.entry_low < decision.target_1 < decision.target_2
     assert decision.factors["exit_plan"]["trailing_distance_atr"] == 3.0
-    assert decision.strategy_version == "0.3.5"
+    assert decision.strategy_version == "0.3.6"
 
 
 def test_short_signal_has_reversed_price_geometry():
@@ -58,7 +58,7 @@ def test_early_short_fires_on_decisive_20_bar_breakdown_above_ema200():
     assert decision.regime == "early_short_above_ema200"
     assert decision.level["type"] == "early_short"
     assert decision.factors["early_short"]["wick_breakout_atr"] >= 0.25
-    assert decision.strategy_version == "0.3.5"
+    assert decision.strategy_version == "0.3.6"
 
 
 def test_early_short_detects_stair_step_decline_even_when_wick_floor_moves():
@@ -192,6 +192,70 @@ def test_structural_fibonacci_caps_short_targets_and_blocks_late_entry():
     assert "late_entry_near_structure" in decision.vetoes
     assert decision.factors["fibonacci"]["progress"] >= 0.5
     assert decision.factors["fibonacci"]["room_atr"] < 1.5
+
+
+
+def test_structural_target_skips_too_close_level_and_preserves_minimum_reward():
+    frame = candles(260, freq="4h", trend=0.0)
+    for column in ("open", "high", "low", "close"):
+        frame[column] = frame[column] + 30_000.0
+    low_idx = frame.index[-160]
+    high_idx = frame.index[-40]
+    frame.loc[low_idx, "low"] = 75_000.0
+    frame.loc[low_idx, "close"] = 75_500.0
+    frame.loc[high_idx, "high"] = 87_500.0
+    frame.loc[high_idx, "close"] = 87_000.0
+    for idx in frame.index[-14:]:
+        close = float(frame.loc[idx, "close"])
+        frame.loc[idx, "high"] = close + 500.0
+        frame.loc[idx, "low"] = close - 500.0
+    for offset, close in zip((-4, -3, -2, -1), (80_700.0, 81_300.0, 82_000.0, 82_380.0)):
+        idx = frame.index[offset]
+        frame.loc[idx, "open"] = close - 120.0
+        frame.loc[idx, "close"] = close
+        frame.loc[idx, "high"] = close + 500.0
+        frame.loc[idx, "low"] = close - 500.0
+    cfg = config()
+    cfg["trend_bidirectional"]["min_risk_to_cost"] = 0.0
+    cfg["structure"]["late_entry_max_room_atr"] = 0.0
+    now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
+    decision = evaluate_trend_signal(frame, cfg, "test_perpetual", 82_382.0, now=now)
+    assert decision.state == "signal"
+    assert decision.side == "long"
+    risk = decision.entry_low - decision.stop
+    assert (decision.target_1 - decision.entry_low) / risk >= 1.0
+    assert (decision.target_2 - decision.entry_low) / risk >= 1.5
+    assert decision.factors["fibonacci"]["target_1_r"] >= 1.0
+    assert decision.factors["fibonacci"]["target_2_r"] >= 1.5
+
+
+def test_signal_is_rejected_when_no_structural_level_offers_one_r():
+    frame = candles(260, freq="4h", trend=0.0)
+    for column in ("open", "high", "low", "close"):
+        frame[column] = frame[column] + 30_000.0
+    low_idx = frame.index[-160]
+    high_idx = frame.index[-40]
+    frame.loc[low_idx, "low"] = 75_000.0
+    frame.loc[low_idx, "close"] = 75_500.0
+    frame.loc[high_idx, "high"] = 83_000.0
+    frame.loc[high_idx, "close"] = 82_900.0
+    for idx in frame.index[-14:]:
+        close = float(frame.loc[idx, "close"])
+        frame.loc[idx, "high"] = close + 500.0
+        frame.loc[idx, "low"] = close - 500.0
+    for offset, close in zip((-4, -3, -2, -1), (80_700.0, 81_300.0, 82_000.0, 82_380.0)):
+        idx = frame.index[offset]
+        frame.loc[idx, "open"] = close - 120.0
+        frame.loc[idx, "close"] = close
+        frame.loc[idx, "high"] = close + 500.0
+        frame.loc[idx, "low"] = close - 500.0
+    cfg = config()
+    cfg["trend_bidirectional"]["min_risk_to_cost"] = 0.0
+    cfg["structure"]["late_entry_max_room_atr"] = 0.0
+    now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
+    decision = evaluate_trend_signal(frame, cfg, "test_perpetual", 82_382.0, now=now)
+    assert decision.state == "neutral"
+    assert "insufficient_structural_reward" in decision.vetoes
 
 
 
