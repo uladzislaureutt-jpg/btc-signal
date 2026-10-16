@@ -52,6 +52,8 @@ def test_early_short_fires_on_decisive_20_bar_breakdown_above_ema200():
     now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
     cfg = config()
     cfg["structure"]["late_entry_max_room_atr"] = 0.0
+    cfg["structure"]["minimum_tp1_r"] = 0.0
+    cfg["structure"]["minimum_tp2_r"] = 0.0
     decision = evaluate_trend_signal(frame, cfg, "test_perpetual", 55_000.0, now=now)
     assert decision.state == "signal"
     assert decision.side == "short"
@@ -114,6 +116,8 @@ def test_early_short_remains_valid_below_ema200_before_20_bar_low_breaks():
     now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
     cfg = config()
     cfg["structure"]["late_entry_max_room_atr"] = 0.0
+    cfg["structure"]["minimum_tp1_r"] = 0.0
+    cfg["structure"]["minimum_tp2_r"] = 0.0
     decision = evaluate_trend_signal(frame, cfg, "test_perpetual", stair[-1], now=now)
     assert decision.state == "signal"
     assert decision.side == "short"
@@ -139,7 +143,10 @@ def test_early_long_detects_stair_step_recovery_before_20_bar_high():
     old_idx = frame.index[-10]
     frame.loc[old_idx, "high"] = stair[-1] + 1200.0
     now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
-    decision = evaluate_trend_signal(frame, config(), "test_perpetual", stair[-1], now=now)
+    cfg = config()
+    cfg["structure"]["minimum_tp1_r"] = 0.0
+    cfg["structure"]["minimum_tp2_r"] = 0.0
+    decision = evaluate_trend_signal(frame, cfg, "test_perpetual", stair[-1], now=now)
     assert decision.state == "signal"
     assert decision.side == "long"
     assert decision.regime == "early_long_above_ema200"
@@ -233,12 +240,12 @@ def test_signal_is_rejected_when_no_structural_level_offers_one_r():
     frame = candles(260, freq="4h", trend=0.0)
     for column in ("open", "high", "low", "close"):
         frame[column] = frame[column] + 30_000.0
-    low_idx = frame.index[-160]
-    high_idx = frame.index[-40]
-    frame.loc[low_idx, "low"] = 75_000.0
-    frame.loc[low_idx, "close"] = 75_500.0
+    high_idx = frame.index[-160]
+    low_idx = frame.index[-40]
     frame.loc[high_idx, "high"] = 83_000.0
     frame.loc[high_idx, "close"] = 82_900.0
+    frame.loc[low_idx, "low"] = 75_000.0
+    frame.loc[low_idx, "close"] = 75_500.0
     for idx in frame.index[-14:]:
         close = float(frame.loc[idx, "close"])
         frame.loc[idx, "high"] = close + 500.0
