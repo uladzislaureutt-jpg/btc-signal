@@ -366,7 +366,7 @@ def evaluate_trend_signal(
                 target_2_structure = level
                 break
 
-    if target_1_structure is None:
+    if directional_levels and target_1_structure is None:
         return _neutral(
             timestamp=signal_time.isoformat(),
             price=current_price,
@@ -385,7 +385,10 @@ def evaluate_trend_signal(
             },
         )
 
-    if side == "short":
+    if target_1_structure is None:
+        target_1 = raw_target_1
+        target_2 = raw_target_2
+    elif side == "short":
         target_1 = max(raw_target_1, float(target_1_structure["price"]))
         target_2 = (
             max(raw_target_2, float(target_2_structure["price"]))
