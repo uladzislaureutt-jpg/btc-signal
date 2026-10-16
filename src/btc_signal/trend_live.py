@@ -60,7 +60,7 @@ def _neutral(
         factors=factors,
         vetoes=vetoes,
         provider=provider,
-        strategy_version="0.3.5",
+        strategy_version="0.3.6",
     )
 
 
@@ -92,6 +92,8 @@ def evaluate_trend_signal(
     structure_cfg = config.get("structure", {})
     late_after = float(structure_cfg.get("late_entry_after_retracement", 0.50))
     late_room_atr = float(structure_cfg.get("late_entry_max_room_atr", 1.50))
+    minimum_tp1_r = float(structure_cfg.get("minimum_tp1_r", 1.0))
+    minimum_tp2_r = float(structure_cfg.get("minimum_tp2_r", 1.5))
     early = config.get("early_short", {})
     early_long = config.get("early_long", early)
     early_short_enabled = bool(early.get("enabled", True))
@@ -351,12 +353,79 @@ def evaluate_trend_signal(
                 },
             },
         )
-    if side == "short":
-        target_1 = max(raw_target_1, float(nearest_structure["price"])) if nearest_structure else raw_target_1
-        target_2 = max(raw_target_2, float(second_structure["price"])) if second_structure else raw_target_2
+    def reward_r(level: dict[str, float]) -> float:
+        return abs(float(level["price"]) - current_price) / risk
+
+    eligible_tp1 = [level for level in directional_levels if reward_r(level) >= minimum_tp1_r]
+    eligible_tp2 = [level for level in directional_levels if reward_r(level) >= minimum_tp2_r]
+    target_1_structure = eligible_tp1[0] if eligible_tp1 else None
+    target_2_structure = None
+    if eligible_tp2:
+        for level in eligible_tp2:
+            if target_1_structure is None or float(level["price"]) != float(target_1_structure["price"]):
+                target_2_structure = level
+                break
+
+    if directional_levels and target_1_structure is None:
+        return _neutral(
+            timestamp=signal_time.isoformat(),
+            price=current_price,
+            provider=provider,
+            vetoes=["insufficient_structural_reward"],
+            factors={
+                **base_factors,
+                "cost_filter": {"risk_to_cost": risk_to_cost, "minimum": min_risk_to_cost},
+                "fibonacci": {
+                    **fib,
+                    "nearest_level": nearest_structure,
+                    "room_atr": room_atr,
+                    "minimum_tp1_r": minimum_tp1_r,
+                    "minimum_tp2_r": minimum_tp2_r,
+                },
+            },
+        )
+
+    if target_1_structure is None:
+        target_1 = raw_target_1
+        target_2 = raw_target_2
+    elif side == "short":
+        target_1 = max(raw_target_1, float(target_1_structure["price"]))
+        target_2 = (
+            max(raw_target_2, float(target_2_structure["price"]))
+            if target_2_structure
+            else raw_target_2
+        )
     else:
-        target_1 = min(raw_target_1, float(nearest_structure["price"])) if nearest_structure else raw_target_1
-        target_2 = min(raw_target_2, float(second_structure["price"])) if second_structure else raw_target_2
+        target_1 = min(raw_target_1, float(target_1_structure["price"]))
+        target_2 = (
+            min(raw_target_2, float(target_2_structure["price"]))
+            if target_2_structure
+            else raw_target_2
+        )
+
+    target_1_r_actual = abs(target_1 - current_price) / risk
+    target_2_r_actual = abs(target_2 - current_price) / risk
+    if target_1_r_actual < minimum_tp1_r or target_2_r_actual < minimum_tp2_r:
+        return _neutral(
+            timestamp=signal_time.isoformat(),
+            price=current_price,
+            provider=provider,
+            vetoes=["insufficient_structural_reward"],
+            factors={
+                **base_factors,
+                "cost_filter": {"risk_to_cost": risk_to_cost, "minimum": min_risk_to_cost},
+                "fibonacci": {
+                    **fib,
+                    "nearest_level": nearest_structure,
+                    "target_1_level": target_1_structure,
+                    "target_2_level": target_2_structure,
+                    "target_1_r": target_1_r_actual,
+                    "target_2_r": target_2_r_actual,
+                    "minimum_tp1_r": minimum_tp1_r,
+                    "minimum_tp2_r": minimum_tp2_r,
+                },
+            },
+        )
     activation = current_price + direction * activation_atr * values["atr"]
     factors = {
         **base_factors,
@@ -365,11 +434,17 @@ def evaluate_trend_signal(
             **fib,
             "nearest_level": nearest_structure,
             "second_level": second_structure,
+            "target_1_level": target_1_structure,
+            "target_2_level": target_2_structure,
             "room_atr": room_atr,
             "raw_target_1": raw_target_1,
             "raw_target_2": raw_target_2,
             "target_1_structured": target_1,
             "target_2_structured": target_2,
+            "target_1_r": target_1_r_actual,
+            "target_2_r": target_2_r_actual,
+            "minimum_tp1_r": minimum_tp1_r,
+            "minimum_tp2_r": minimum_tp2_r,
         },
         "exit_plan": {
             "mode": "atr_trailing",
@@ -418,5 +493,5 @@ def evaluate_trend_signal(
         factors=factors,
         vetoes=[],
         provider=provider,
-        strategy_version="0.3.5",
+        strategy_version="0.3.6",
     )
