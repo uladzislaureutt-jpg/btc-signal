@@ -55,16 +55,16 @@ def test_wick_breakdown_alone_does_not_trigger_early_short():
 
 
 def test_early_short_requires_confirmed_breakdown_below_ema():
-    frame = candles(260, freq="4h", trend=20.0)
-    frame["high"] = frame["close"] + 400.0
-    frame["low"] = frame["close"] - 400.0
+    frame = candles(260, freq="4h", trend=0.0)
+    frame["high"] = frame["close"] + 300.0
+    frame["low"] = frame["close"] - 300.0
     base = float(frame["close"].iloc[-4])
-    stair = [base - 700.0, base - 1800.0, base - 3300.0]
+    stair = [base - 900.0, base - 2200.0, base - 3800.0]
     for offset, close in zip((-3, -2, -1), stair):
         idx = frame.index[offset]
         frame.loc[idx, "close"] = close
-        frame.loc[idx, "high"] = close + 400.0
-        frame.loc[idx, "low"] = close - 400.0
+        frame.loc[idx, "high"] = close + 300.0
+        frame.loc[idx, "low"] = close - 300.0
     old_idx = frame.index[-10]
     frame.loc[old_idx, "low"] = stair[-1] - 1800.0
     cfg = config()
@@ -180,6 +180,12 @@ def test_structural_fibonacci_caps_short_targets_and_blocks_late_entry():
         frame.loc[idx, "low"] = close - 500.0
     cfg = config()
     cfg["trend_bidirectional"]["min_risk_to_cost"] = 0.0
+    cfg["trend_bidirectional"]["ema_period"] = 2
+    cfg["early_short"]["min_close_breakout_atr"] = 0.0
+    cfg["early_short"]["min_momentum_atr"] = 0.0
+    cfg["early_short"]["min_lower_closes"] = 1
+    cfg["early_short"]["ema_confirm_bars"] = 1
+    cfg["early_short"]["min_ema_separation_atr"] = -10.0
     now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
     decision = evaluate_trend_signal(frame, cfg, "test_perpetual", 80_900.0, now=now)
     assert decision.state == "neutral"
