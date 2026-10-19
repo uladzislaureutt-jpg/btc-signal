@@ -42,15 +42,22 @@ def run_once(dry_run: bool = False, notify_watch: bool = True) -> RunResult:
         decision.state = "neutral"
         duplicate = store.seen(decision.dedup_key)
     episode_hours = int(config.get("structure", {}).get("episode_hours", 24))
-    if (
-        not duplicate
-        and decision.state in ("signal", "strong_signal")
-        and decision.side
-        and store.same_side_episode_active(decision.side, decision.timestamp, episode_hours)
-    ):
-        decision.vetoes.append("same_side_episode_active")
-        decision.state = "neutral"
-        duplicate = store.seen(decision.dedup_key)
+    if not duplicate and decision.state in ("signal", "strong_signal") and decision.side:
+        recent_side = store.recent_signal_side(decision.timestamp, episode_hours)
+        if recent_side == decision.side:
+            decision.vetoes.append("same_side_episode_active")
+            decision.state = "neutral"
+            duplicate = store.seen(decision.dedup_key)
+        elif recent_side and recent_side != decision.side:
+            signal_type = decision.factors.get("signal_type", {}).get("value")
+            factor_name = "early_long" if decision.side == "long" else "early_short"
+            reversal_confirmed = bool(
+                decision.factors.get(factor_name, {}).get("reversal_confirmed", False)
+            )
+            if signal_type != "trend_breakout" and not reversal_confirmed:
+                decision.vetoes.append("directional_reset_required")
+                decision.state = "neutral"
+                duplicate = store.seen(decision.dedup_key)
     should_notify = decision.state in ("signal", "strong_signal") or (
         notify_watch and decision.state == "watch"
     )

@@ -60,7 +60,7 @@ def _neutral(
         factors=factors,
         vetoes=vetoes,
         provider=provider,
-        strategy_version="0.3.6",
+        strategy_version="0.4.0",
     )
 
 
@@ -104,12 +104,18 @@ def evaluate_trend_signal(
     early_momentum_bars = int(early.get("momentum_bars", 3))
     early_min_momentum_atr = float(early.get("min_momentum_atr", 0.75))
     early_min_lower_closes = int(early.get("min_lower_closes", 2))
+    early_short_ema_confirm_bars = int(early.get("ema_confirm_bars", 2))
+    early_short_min_ema_sep_atr = float(early.get("min_ema_separation_atr", 0.25))
+    early_short_reversal_min_ema_sep_atr = float(early.get("reversal_min_ema_separation_atr", 0.50))
     early_long_min_breakout_atr = float(early_long.get("min_breakout_atr", 0.25))
     early_long_close_bars = int(early_long.get("close_breakout_bars", 6))
     early_long_min_close_breakout_atr = float(early_long.get("min_close_breakout_atr", 0.10))
     early_long_momentum_bars = int(early_long.get("momentum_bars", 3))
     early_long_min_momentum_atr = float(early_long.get("min_momentum_atr", 0.75))
     early_long_min_higher_closes = int(early_long.get("min_higher_closes", 2))
+    early_long_ema_confirm_bars = int(early_long.get("ema_confirm_bars", 2))
+    early_long_min_ema_sep_atr = float(early_long.get("min_ema_separation_atr", 0.25))
+    early_long_reversal_min_ema_sep_atr = float(early_long.get("reversal_min_ema_separation_atr", 0.50))
 
     required = max(ema_period, breakout_bars, atr_period) + 2
     if len(frame_4h) < required:
@@ -193,10 +199,22 @@ def evaluate_trend_signal(
         momentum_atr >= early_min_momentum_atr
         and lower_closes >= early_min_lower_closes
     )
+    recent_short_regime = frame.tail(early_short_ema_confirm_bars)
+    short_ema_confirmed = bool((recent_short_regime["close"] < recent_short_regime["ema"]).all())
+    short_ema_separation_atr = (values["ema"] - values["close"]) / values["atr"]
+    short_ema_separation_ok = short_ema_separation_atr >= early_short_min_ema_sep_atr
+    short_reversal_confirmed = (
+        short_ema_confirmed
+        and short_ema_separation_atr >= early_short_reversal_min_ema_sep_atr
+        and momentum_breakdown
+    )
     early_short_signal = (
         early_short_enabled
         and not short_signal
-        and (wick_breakdown or close_breakdown or momentum_breakdown)
+        and close_breakdown
+        and momentum_breakdown
+        and short_ema_confirmed
+        and short_ema_separation_ok
     )
     base_factors["early_short"] = {
         "enabled": early_short_enabled,
@@ -213,6 +231,10 @@ def evaluate_trend_signal(
         "wick_breakdown": wick_breakdown,
         "close_breakdown": close_breakdown,
         "momentum_breakdown": momentum_breakdown,
+        "ema_confirmed": short_ema_confirmed,
+        "ema_separation_atr": short_ema_separation_atr,
+        "minimum_ema_separation_atr": early_short_min_ema_sep_atr,
+        "reversal_confirmed": short_reversal_confirmed,
         "above_ema200": values["close"] >= values["ema"],
     }
     upside_breakout_atr = (values["close"] - values["prior_high"]) / values["atr"]
@@ -233,11 +255,22 @@ def evaluate_trend_signal(
         long_momentum_atr >= early_long_min_momentum_atr
         and higher_closes >= early_long_min_higher_closes
     )
+    recent_long_regime = frame.tail(early_long_ema_confirm_bars)
+    long_ema_confirmed = bool((recent_long_regime["close"] > recent_long_regime["ema"]).all())
+    long_ema_separation_atr = (values["close"] - values["ema"]) / values["atr"]
+    long_ema_separation_ok = long_ema_separation_atr >= early_long_min_ema_sep_atr
+    long_reversal_confirmed = (
+        long_ema_confirmed
+        and long_ema_separation_atr >= early_long_reversal_min_ema_sep_atr
+        and momentum_up_breakout
+    )
     early_long_signal = (
         early_long_enabled
-        and values["close"] >= values["ema"]
         and not long_signal
-        and (wick_up_breakout or close_up_breakout or momentum_up_breakout)
+        and close_up_breakout
+        and momentum_up_breakout
+        and long_ema_confirmed
+        and long_ema_separation_ok
     )
     base_factors["early_long"] = {
         "enabled": early_long_enabled,
@@ -254,6 +287,10 @@ def evaluate_trend_signal(
         "wick_breakout": wick_up_breakout,
         "close_breakout": close_up_breakout,
         "momentum_breakout": momentum_up_breakout,
+        "ema_confirmed": long_ema_confirmed,
+        "ema_separation_atr": long_ema_separation_atr,
+        "minimum_ema_separation_atr": early_long_min_ema_sep_atr,
+        "reversal_confirmed": long_reversal_confirmed,
         "above_ema200": values["close"] >= values["ema"],
     }
     if not long_signal and not short_signal and not early_short_signal and not early_long_signal:
@@ -282,19 +319,9 @@ def evaluate_trend_signal(
 
     side = "long" if (long_signal or early_long_signal) else "short"
     if early_long_signal:
-        if close_up_breakout:
-            signal_type = "early_close_breakout_long"
-        elif momentum_up_breakout:
-            signal_type = "early_momentum_breakout_long"
-        else:
-            signal_type = "early_wick_breakout_long"
+        signal_type = "confirmed_early_long"
     elif early_short_signal:
-        if close_breakdown:
-            signal_type = "early_close_breakdown"
-        elif momentum_breakdown:
-            signal_type = "early_momentum_breakdown"
-        else:
-            signal_type = "early_wick_breakdown"
+        signal_type = "confirmed_early_short"
     else:
         signal_type = "trend_breakout"
     direction = 1.0 if side == "long" else -1.0
@@ -473,7 +500,7 @@ def evaluate_trend_signal(
         timestamp=signal_time.isoformat(),
         state="signal",
         side=side,
-        score=100,
+        score=(100 if signal_type == "trend_breakout" else 90),
         price=current_price,
         entry_low=current_price,
         entry_high=current_price,
@@ -493,5 +520,5 @@ def evaluate_trend_signal(
         factors=factors,
         vetoes=[],
         provider=provider,
-        strategy_version="0.3.6",
+        strategy_version="0.4.0",
     )
