@@ -1,3 +1,3 @@
-"BTC Signal Core 0.3.6."
+"BTC Signal Core 0.4.0."
 
-__version__ = "0.3.6"
+__version__ = "0.4.0"
