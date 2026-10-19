@@ -182,6 +182,7 @@ def test_structural_fibonacci_caps_short_targets_and_blocks_late_entry():
     cfg["trend_bidirectional"]["min_risk_to_cost"] = 0.0
     cfg["trend_bidirectional"]["ema_period"] = 2
     cfg["early_short"]["min_close_breakout_atr"] = 0.0
+    cfg["early_short"]["close_breakout_bars"] = 1
     cfg["early_short"]["min_momentum_atr"] = 0.0
     cfg["early_short"]["min_lower_closes"] = 1
     cfg["early_short"]["ema_confirm_bars"] = 1
