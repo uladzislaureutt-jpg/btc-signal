@@ -71,6 +71,7 @@ def test_early_short_requires_confirmed_breakdown_below_ema():
     old_idx = frame.index[-10]
     frame.loc[old_idx, "low"] = stair[-1] - 1800.0
     cfg = config()
+    cfg["fast_trend"]["enabled"] = False
     cfg["structure"]["late_entry_max_room_atr"] = 0.0
     cfg["structure"]["minimum_tp1_r"] = 0.0
     cfg["structure"]["minimum_tp2_r"] = 0.0
@@ -114,6 +115,7 @@ def test_early_long_requires_confirmed_recovery_above_ema():
     old_idx = frame.index[-10]
     frame.loc[old_idx, "high"] = stair[-1] + 1600.0
     cfg = config()
+    cfg["fast_trend"]["enabled"] = False
     cfg["structure"]["minimum_tp1_r"] = 0.0
     cfg["structure"]["minimum_tp2_r"] = 0.0
     cfg["structure"]["late_entry_max_room_atr"] = 0.0
@@ -182,6 +184,7 @@ def test_structural_fibonacci_caps_short_targets_and_blocks_late_entry():
         frame.loc[idx, "high"] = close + 500.0
         frame.loc[idx, "low"] = close - 500.0
     cfg = config()
+    cfg["fast_trend"]["enabled"] = False
     cfg["trend_bidirectional"]["min_risk_to_cost"] = 0.0
     cfg["trend_bidirectional"]["ema_period"] = 2
     cfg["early_short"]["min_close_breakout_atr"] = 0.0
@@ -266,12 +269,12 @@ def test_signal_is_rejected_when_no_structural_level_offers_one_r():
 def test_fast_short_catches_strong_impulse_before_second_ema_close():
     frame = candles(260, freq="4h", trend=0.0)
     for column in ("open", "high", "low", "close"):
-        frame[column] = frame[column] + 32_500.0
+        frame[column] = frame[column] + 33_500.0
     frame["high"] = frame["close"] + 450.0
     frame["low"] = frame["close"] - 450.0
 
     # A sharp 3-candle decline comparable to the 22 Oct production episode.
-    closes = [84_500.0, 84_050.0, 82_900.0, 82_200.0]
+    closes = [84_500.0, 84_050.0, 83_800.0, 82_200.0]
     for offset, close in zip((-4, -3, -2, -1), closes):
         idx = frame.index[offset]
         frame.loc[idx, "open"] = close + 100.0
