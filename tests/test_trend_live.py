@@ -1,5 +1,8 @@
+import json
+
 import pandas as pd
 
+from btc_signal.strategy import Decision
 from btc_signal.trend_live import evaluate_trend_signal
 from conftest import candles, config
 
@@ -29,7 +32,7 @@ def test_long_signal_contains_entry_stop_targets_and_trailing_plan():
     assert decision.entry_low == decision.entry_high == 55_000.0
     assert decision.stop < decision.entry_low < decision.target_1 < decision.target_2
     assert decision.factors["exit_plan"]["trailing_distance_atr"] == 3.0
-    assert decision.strategy_version == "0.4.0"
+    assert decision.strategy_version == "0.4.1"
 
 
 def test_short_signal_has_reversed_price_geometry():
@@ -257,6 +260,65 @@ def test_signal_is_rejected_when_no_structural_level_offers_one_r():
     decision = evaluate_trend_signal(frame, cfg, "test_perpetual", 82_382.0, now=now)
     assert decision.state == "neutral"
     assert "insufficient_structural_reward" in decision.vetoes
+
+
+
+def test_fast_short_catches_strong_impulse_before_second_ema_close():
+    frame = candles(260, freq="4h", trend=0.0)
+    for column in ("open", "high", "low", "close"):
+        frame[column] = frame[column] + 32_500.0
+    frame["high"] = frame["close"] + 450.0
+    frame["low"] = frame["close"] - 450.0
+
+    # A sharp 3-candle decline comparable to the 22 Oct production episode.
+    closes = [84_500.0, 84_050.0, 82_900.0, 82_200.0]
+    for offset, close in zip((-4, -3, -2, -1), closes):
+        idx = frame.index[offset]
+        frame.loc[idx, "open"] = close + 100.0
+        frame.loc[idx, "close"] = close
+        frame.loc[idx, "high"] = close + 450.0
+        frame.loc[idx, "low"] = close - 450.0
+
+    cfg = config()
+    cfg["structure"]["late_entry_max_room_atr"] = 0.0
+    cfg["structure"]["minimum_tp1_r"] = 10.0
+    cfg["structure"]["minimum_tp2_r"] = 10.0
+    now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
+    decision = evaluate_trend_signal(frame, cfg, "test_perpetual", 82_150.0, now=now)
+
+    assert decision.state == "signal"
+    assert decision.side == "short"
+    assert decision.score == 95
+    assert decision.factors["signal_type"]["value"] == "fast_trend_short"
+    assert decision.factors["fast_trend"]["confirmed"] is True
+    assert decision.factors["early_short"]["ema_confirmed"] is False
+    assert decision.strategy_version == "0.4.1"
+
+
+def test_decision_payload_replaces_non_finite_values_with_null():
+    decision = Decision(
+        timestamp="2026-10-24T16:00:00+00:00",
+        state="signal",
+        side="short",
+        score=95,
+        price=79_700.0,
+        entry_low=79_700.0,
+        entry_high=79_700.0,
+        stop=81_000.0,
+        target_1=78_000.0,
+        target_2=77_000.0,
+        rr=2.0,
+        regime="fast_short_below_ema200",
+        level={"type": "fast_trend", "price": 80_000.0},
+        factors={"fibonacci": {"room_atr": float("inf"), "other": float("nan")}},
+        vetoes=[],
+        provider="okx_swap",
+        strategy_version="0.4.1",
+    )
+    payload = decision.to_dict()
+    assert payload["factors"]["fibonacci"]["room_atr"] is None
+    assert payload["factors"]["fibonacci"]["other"] is None
+    json.dumps(payload, allow_nan=False)
 
 
 
