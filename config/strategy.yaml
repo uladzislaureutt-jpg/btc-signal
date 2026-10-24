@@ -108,6 +108,14 @@ trend_bidirectional:
   regime_lookback_days: 180
   regime_threshold: 0.15
 
+fast_trend:
+  enabled: true
+  min_close_breakout_atr: 0.50
+  min_momentum_atr: 1.50
+  min_directional_closes: 3
+  min_ema_separation_atr: 0.25
+  reversal_min_ema_separation_atr: 0.50
+
 structure:
   fib_lookback_bars: 180
   fib_ratios: [0.236, 0.382, 0.5, 0.618, 0.786, 1.0]

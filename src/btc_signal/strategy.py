@@ -37,7 +37,7 @@ class Decision:
 
     @property
     def dedup_key(self) -> str:
-        if self.strategy_version in {"0.3.1", "0.3.2", "0.3.3", "0.3.4", "0.3.5", "0.3.6", "0.4.0"}:
+        if self.strategy_version in {"0.3.1", "0.3.2", "0.3.3", "0.3.4", "0.3.5", "0.3.6", "0.4.0", "0.4.1"}:
             identity = [
                 self.strategy_version,
                 self.timestamp,
@@ -57,9 +57,18 @@ class Decision:
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def to_dict(self) -> dict:
+        def json_safe(value):
+            if isinstance(value, dict):
+                return {key: json_safe(item) for key, item in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [json_safe(item) for item in value]
+            if isinstance(value, (float, np.floating)) and not np.isfinite(value):
+                return None
+            return value
+
         data = asdict(self)
         data["dedup_key"] = self.dedup_key
-        return data
+        return json_safe(data)
 
 
 @dataclass(frozen=True)

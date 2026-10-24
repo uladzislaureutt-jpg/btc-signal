@@ -60,7 +60,7 @@ def _neutral(
         factors=factors,
         vetoes=vetoes,
         provider=provider,
-        strategy_version="0.4.0",
+        strategy_version="0.4.1",
     )
 
 
@@ -94,6 +94,13 @@ def evaluate_trend_signal(
     late_room_atr = float(structure_cfg.get("late_entry_max_room_atr", 1.50))
     minimum_tp1_r = float(structure_cfg.get("minimum_tp1_r", 1.0))
     minimum_tp2_r = float(structure_cfg.get("minimum_tp2_r", 1.5))
+    fast = config.get("fast_trend", {})
+    fast_enabled = bool(fast.get("enabled", True))
+    fast_min_close_breakout_atr = float(fast.get("min_close_breakout_atr", 0.50))
+    fast_min_momentum_atr = float(fast.get("min_momentum_atr", 1.50))
+    fast_min_directional_closes = int(fast.get("min_directional_closes", 3))
+    fast_min_ema_sep_atr = float(fast.get("min_ema_separation_atr", 0.25))
+    fast_reversal_min_ema_sep_atr = float(fast.get("reversal_min_ema_separation_atr", 0.50))
     early = config.get("early_short", {})
     early_long = config.get("early_long", early)
     early_short_enabled = bool(early.get("enabled", True))
@@ -208,9 +215,19 @@ def evaluate_trend_signal(
         and short_ema_separation_atr >= early_short_reversal_min_ema_sep_atr
         and momentum_breakdown
     )
+    fast_short_signal = (
+        fast_enabled
+        and not short_signal
+        and close_breakout_atr >= fast_min_close_breakout_atr
+        and momentum_atr >= fast_min_momentum_atr
+        and lower_closes >= fast_min_directional_closes
+        and values["close"] < values["ema"]
+        and short_ema_separation_atr >= fast_min_ema_sep_atr
+    )
     early_short_signal = (
         early_short_enabled
         and not short_signal
+        and not fast_short_signal
         and close_breakdown
         and momentum_breakdown
         and short_ema_confirmed
@@ -264,14 +281,40 @@ def evaluate_trend_signal(
         and long_ema_separation_atr >= early_long_reversal_min_ema_sep_atr
         and momentum_up_breakout
     )
+    fast_long_signal = (
+        fast_enabled
+        and not long_signal
+        and close_up_breakout_atr >= fast_min_close_breakout_atr
+        and long_momentum_atr >= fast_min_momentum_atr
+        and higher_closes >= fast_min_directional_closes
+        and values["close"] > values["ema"]
+        and long_ema_separation_atr >= fast_min_ema_sep_atr
+    )
     early_long_signal = (
         early_long_enabled
         and not long_signal
+        and not fast_long_signal
         and close_up_breakout
         and momentum_up_breakout
         and long_ema_confirmed
         and long_ema_separation_ok
     )
+    fast_side = "long" if fast_long_signal else ("short" if fast_short_signal else None)
+    fast_reversal_confirmed = (
+        (fast_long_signal and long_ema_separation_atr >= fast_reversal_min_ema_sep_atr)
+        or (fast_short_signal and short_ema_separation_atr >= fast_reversal_min_ema_sep_atr)
+    )
+    base_factors["fast_trend"] = {
+        "enabled": fast_enabled,
+        "side": fast_side,
+        "confirmed": bool(fast_long_signal or fast_short_signal),
+        "minimum_close_breakout_atr": fast_min_close_breakout_atr,
+        "minimum_momentum_atr": fast_min_momentum_atr,
+        "minimum_directional_closes": fast_min_directional_closes,
+        "minimum_ema_separation_atr": fast_min_ema_sep_atr,
+        "reversal_minimum_ema_separation_atr": fast_reversal_min_ema_sep_atr,
+        "reversal_confirmed": bool(fast_reversal_confirmed),
+    }
     base_factors["early_long"] = {
         "enabled": early_long_enabled,
         "wick_breakout_atr": upside_breakout_atr,
@@ -293,7 +336,7 @@ def evaluate_trend_signal(
         "reversal_confirmed": long_reversal_confirmed,
         "above_ema200": values["close"] >= values["ema"],
     }
-    if not long_signal and not short_signal and not early_short_signal and not early_long_signal:
+    if not long_signal and not short_signal and not fast_short_signal and not fast_long_signal and not early_short_signal and not early_long_signal:
         return _neutral(
             timestamp=signal_time.isoformat(),
             price=current_price,
@@ -317,8 +360,12 @@ def evaluate_trend_signal(
             factors=base_factors,
         )
 
-    side = "long" if (long_signal or early_long_signal) else "short"
-    if early_long_signal:
+    side = "long" if (long_signal or fast_long_signal or early_long_signal) else "short"
+    if fast_long_signal:
+        signal_type = "fast_trend_long"
+    elif fast_short_signal:
+        signal_type = "fast_trend_short"
+    elif early_long_signal:
         signal_type = "confirmed_early_long"
     elif early_short_signal:
         signal_type = "confirmed_early_short"
@@ -362,7 +409,8 @@ def evaluate_trend_signal(
         (side == "short" and fib.get("direction") == "up")
         or (side == "long" and fib.get("direction") == "down")
     )
-    if matching_retracement and progress >= late_after and room_atr < late_room_atr:
+    fast_signal = bool(fast_long_signal or fast_short_signal)
+    if not fast_signal and matching_retracement and progress >= late_after and room_atr < late_room_atr:
         return _neutral(
             timestamp=signal_time.isoformat(),
             price=current_price,
@@ -393,7 +441,7 @@ def evaluate_trend_signal(
                 target_2_structure = level
                 break
 
-    if directional_levels and target_1_structure is None:
+    if not fast_signal and directional_levels and target_1_structure is None:
         return _neutral(
             timestamp=signal_time.isoformat(),
             price=current_price,
@@ -432,7 +480,7 @@ def evaluate_trend_signal(
 
     target_1_r_actual = abs(target_1 - current_price) / risk
     target_2_r_actual = abs(target_2 - current_price) / risk
-    if target_1_r_actual < minimum_tp1_r or target_2_r_actual < minimum_tp2_r:
+    if not fast_signal and (target_1_r_actual < minimum_tp1_r or target_2_r_actual < minimum_tp2_r):
         return _neutral(
             timestamp=signal_time.isoformat(),
             price=current_price,
@@ -482,7 +530,11 @@ def evaluate_trend_signal(
             "target_2_is_reference": True,
         },
     }
-    if early_long_signal and close_up_breakout:
+    if fast_long_signal:
+        channel = values["prior_close_high"]
+    elif fast_short_signal:
+        channel = values["prior_close_low"]
+    elif early_long_signal and close_up_breakout:
         channel = values["prior_close_high"]
     elif early_long_signal and momentum_up_breakout:
         channel = long_momentum_reference
@@ -494,13 +546,13 @@ def evaluate_trend_signal(
         channel = momentum_reference
     else:
         channel = values["prior_low"]
-    level_type = "early_long" if early_long_signal else ("early_short" if early_short_signal else "donchian_breakout")
+    level_type = "fast_trend" if fast_signal else ("early_long" if early_long_signal else ("early_short" if early_short_signal else "donchian_breakout"))
     factors["signal_type"] = {"value": signal_type}
     return Decision(
         timestamp=signal_time.isoformat(),
         state="signal",
         side=side,
-        score=(100 if signal_type == "trend_breakout" else 90),
+        score=(100 if signal_type == "trend_breakout" else (95 if fast_signal else 90)),
         price=current_price,
         entry_low=current_price,
         entry_high=current_price,
@@ -509,16 +561,20 @@ def evaluate_trend_signal(
         target_2=target_2,
         rr=target_2_r,
         regime=(
-            "early_long_above_ema200" if early_long_signal
+            ("fast_long_above_ema200" if side == "long" else "fast_short_below_ema200")
+            if fast_signal
             else (
-                ("early_short_above_ema200" if values["close"] >= values["ema"] else "early_short_below_ema200")
-                if early_short_signal
-                else ("above_ema200" if side == "long" else "below_ema200")
+                "early_long_above_ema200" if early_long_signal
+                else (
+                    ("early_short_above_ema200" if values["close"] >= values["ema"] else "early_short_below_ema200")
+                    if early_short_signal
+                    else ("above_ema200" if side == "long" else "below_ema200")
+                )
             )
         ),
         level={"type": level_type, "bars": breakout_bars, "price": channel},
         factors=factors,
         vetoes=[],
         provider=provider,
-        strategy_version="0.4.0",
+        strategy_version="0.4.1",
     )
