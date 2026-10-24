@@ -281,6 +281,8 @@ def test_fast_short_catches_strong_impulse_before_second_ema_close():
         frame.loc[idx, "close"] = close
         frame.loc[idx, "high"] = close + 450.0
         frame.loc[idx, "low"] = close - 450.0
+    # Keep the 20-bar wick floor below price, as in production on 22 Oct.
+    frame.loc[frame.index[-10], "low"] = 80_500.0
 
     cfg = config()
     cfg["structure"]["late_entry_max_room_atr"] = 0.0
