@@ -35,6 +35,59 @@ def _fib_context(frame: pd.DataFrame, config: dict, price: float) -> dict[str, o
     }
 
 
+def episode_reset_status(
+    frame_4h: pd.DataFrame,
+    previous_candle_time: str,
+    current_candle_time: str,
+    side: str,
+    atr_value: float,
+    *,
+    minimum_pullback_atr: float = 1.25,
+    minimum_counter_closes: int = 2,
+) -> dict[str, object]:
+    """Causal reset after the most recent notified entry, using closed 4H candles only.
+
+    A new same-direction EARLY or FAST entry needs a sustained countertrend
+    retracement, followed by the normal fresh signal conditions. Time alone is
+    never treated as a reset.
+    """
+    frame = frame_4h.sort_index()
+    if "close_time" in frame.columns:
+        times = pd.to_datetime(frame["close_time"], utc=True)
+    else:
+        times = pd.to_datetime(frame.index, utc=True) + pd.Timedelta(hours=4) - pd.Timedelta(milliseconds=1)
+    start = pd.Timestamp(previous_candle_time)
+    end = pd.Timestamp(current_candle_time)
+    start = start.tz_localize("UTC") if start.tzinfo is None else start.tz_convert("UTC")
+    end = end.tz_localize("UTC") if end.tzinfo is None else end.tz_convert("UTC")
+    closes = frame.loc[(times >= start) & (times <= end), "close"].to_numpy(dtype=float)
+    result = {
+        "confirmed": False,
+        "previous_candle_time": previous_candle_time,
+        "observed_bars": int(len(closes)),
+        "maximum_pullback_atr": 0.0,
+        "minimum_pullback_atr": minimum_pullback_atr,
+        "minimum_counter_closes": minimum_counter_closes,
+    }
+    if len(closes) < minimum_counter_closes + 2 or not np.isfinite(atr_value) or atr_value <= 0 or side not in ("long", "short"):
+        return result
+    extreme = float(closes[0])
+    counter_count = 0
+    for previous, close in zip(closes[:-1], closes[1:]):
+        if side == "short":
+            extreme = min(extreme, float(previous))
+            counter_count = counter_count + 1 if close > previous else 0
+            pullback = max(0.0, (close - extreme) / atr_value)
+        else:
+            extreme = max(extreme, float(previous))
+            counter_count = counter_count + 1 if close < previous else 0
+            pullback = max(0.0, (extreme - close) / atr_value)
+        result["maximum_pullback_atr"] = max(float(result["maximum_pullback_atr"]), pullback)
+        if counter_count >= minimum_counter_closes and pullback >= minimum_pullback_atr:
+            result["confirmed"] = True
+    return result
+
+
 def _neutral(
     *,
     timestamp: str,
@@ -60,7 +113,7 @@ def _neutral(
         factors=factors,
         vetoes=vetoes,
         provider=provider,
-        strategy_version="0.4.1",
+        strategy_version="0.4.2",
     )
 
 
@@ -94,6 +147,9 @@ def evaluate_trend_signal(
     late_room_atr = float(structure_cfg.get("late_entry_max_room_atr", 1.50))
     minimum_tp1_r = float(structure_cfg.get("minimum_tp1_r", 1.0))
     minimum_tp2_r = float(structure_cfg.get("minimum_tp2_r", 1.5))
+    early_max_ema_distance_atr = float(structure_cfg.get("early_max_ema_distance_atr", 3.0))
+    early_min_extreme_room_atr = float(structure_cfg.get("early_min_extreme_room_atr", 1.0))
+    swing_extreme_lookback_bars = int(structure_cfg.get("swing_extreme_lookback_bars", 180))
     fast = config.get("fast_trend", {})
     fast_enabled = bool(fast.get("enabled", True))
     fast_min_close_breakout_atr = float(fast.get("min_close_breakout_atr", 0.50))
@@ -372,6 +428,45 @@ def evaluate_trend_signal(
     else:
         signal_type = "trend_breakout"
     direction = 1.0 if side == "long" else -1.0
+
+    # EARLY is an entry ahead of a confirmed 20-bar breakout, not permission
+    # to chase an extended trend. FAST and the frozen Donchian core remain
+    # unchanged to preserve detection of genuine large initial impulses.
+    if early_long_signal or early_short_signal:
+        ema_distance_atr = abs(values["close"] - values["ema"]) / values["atr"]
+        previous_swings = frame.iloc[-1 - swing_extreme_lookback_bars : -1]
+        if side == "short":
+            prior_swing_extreme = float(previous_swings["low"].min())
+            candidates = [x for x in (values["prior_low"], prior_swing_extreme) if x < current_price]
+            nearest_extreme = max(candidates) if candidates else None
+            extreme_room_atr = (current_price - nearest_extreme) / values["atr"] if nearest_extreme is not None else None
+        else:
+            prior_swing_extreme = float(previous_swings["high"].max())
+            candidates = [x for x in (values["prior_high"], prior_swing_extreme) if x > current_price]
+            nearest_extreme = min(candidates) if candidates else None
+            extreme_room_atr = (nearest_extreme - current_price) / values["atr"] if nearest_extreme is not None else None
+        stage = {
+            "ema_distance_atr": ema_distance_atr,
+            "maximum_ema_distance_atr": early_max_ema_distance_atr,
+            "prior_20bar_extreme": values["prior_low"] if side == "short" else values["prior_high"],
+            "prior_swing_extreme": prior_swing_extreme,
+            "nearest_extreme": nearest_extreme,
+            "extreme_room_atr": extreme_room_atr,
+            "minimum_extreme_room_atr": early_min_extreme_room_atr,
+            "lookback_bars": swing_extreme_lookback_bars,
+        }
+        base_factors["trend_stage"] = stage
+        if ema_distance_atr > early_max_ema_distance_atr:
+            return _neutral(
+                timestamp=signal_time.isoformat(), price=current_price, provider=provider,
+                vetoes=["early_trend_overextended"], factors=base_factors,
+            )
+        if extreme_room_atr is not None and extreme_room_atr < early_min_extreme_room_atr:
+            return _neutral(
+                timestamp=signal_time.isoformat(), price=current_price, provider=provider,
+                vetoes=["early_entry_near_prior_extreme"], factors=base_factors,
+            )
+
     risk = stop_atr * values["atr"]
     stop = current_price - direction * risk
     risk_pct = risk / current_price
@@ -576,5 +671,5 @@ def evaluate_trend_signal(
         factors=factors,
         vetoes=[],
         provider=provider,
-        strategy_version="0.4.1",
+        strategy_version="0.4.2",
     )
