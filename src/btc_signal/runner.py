@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from .config import load_config
 from .data import build_market_data
 from .storage import build_store
 from .strategy import Decision
 from .telegram import send
-from .trend_live import evaluate_trend_signal
+from .trend_live import episode_reset_status, evaluate_trend_signal
 
 
 @dataclass
@@ -41,28 +42,45 @@ def run_once(dry_run: bool = False, notify_watch: bool = True) -> RunResult:
         decision.vetoes.append("cooldown_active")
         decision.state = "neutral"
         duplicate = store.seen(decision.dedup_key)
-    episode_hours = int(config.get("structure", {}).get("episode_hours", 24))
+    structure_cfg = config.get("structure", {})
+    episode_hours = int(structure_cfg.get("episode_hours", 24))
+    reset_hours = int(structure_cfg.get("episode_reset_lookback_hours", 720))
     if not duplicate and decision.state in ("signal", "strong_signal") and decision.side:
-        recent_side = store.recent_signal_side(decision.timestamp, episode_hours)
-        if recent_side == decision.side:
-            decision.vetoes.append("same_side_episode_active")
-            decision.state = "neutral"
-            duplicate = store.seen(decision.dedup_key)
-        elif recent_side and recent_side != decision.side:
-            signal_type = decision.factors.get("signal_type", {}).get("value")
-            if signal_type in ("fast_trend_long", "fast_trend_short"):
-                reversal_confirmed = bool(
-                    decision.factors.get("fast_trend", {}).get("reversal_confirmed", False)
-                )
-            else:
-                factor_name = "early_long" if decision.side == "long" else "early_short"
-                reversal_confirmed = bool(
-                    decision.factors.get(factor_name, {}).get("reversal_confirmed", False)
-                )
-            if signal_type != "trend_breakout" and not reversal_confirmed:
-                decision.vetoes.append("directional_reset_required")
+        previous = store.most_recent_notified_signal(decision.timestamp, reset_hours)
+        if previous and previous["side"] == decision.side:
+            reset = episode_reset_status(
+                frames["4h"],
+                previous["candle_time"],
+                decision.timestamp,
+                decision.side,
+                float(decision.factors["volatility"]["atr"]),
+                minimum_pullback_atr=float(structure_cfg.get("episode_reset_pullback_atr", 1.25)),
+                minimum_counter_closes=int(structure_cfg.get("episode_reset_counter_closes", 2)),
+            )
+            decision.factors["episode_reset"] = reset
+            if not reset["confirmed"]:
+                decision.vetoes.append("same_direction_without_structural_reset")
                 decision.state = "neutral"
                 duplicate = store.seen(decision.dedup_key)
+        elif previous and previous["side"] != decision.side:
+            last_time = datetime.fromisoformat(previous["candle_time"]).astimezone(timezone.utc)
+            current_time = datetime.fromisoformat(decision.timestamp).astimezone(timezone.utc)
+            hours_since_opposite = (current_time - last_time).total_seconds() / 3600.0
+            if 0 <= hours_since_opposite <= episode_hours:
+                signal_type = decision.factors.get("signal_type", {}).get("value")
+                if signal_type in ("fast_trend_long", "fast_trend_short"):
+                    reversal_confirmed = bool(
+                        decision.factors.get("fast_trend", {}).get("reversal_confirmed", False)
+                    )
+                else:
+                    factor_name = "early_long" if decision.side == "long" else "early_short"
+                    reversal_confirmed = bool(
+                        decision.factors.get(factor_name, {}).get("reversal_confirmed", False)
+                    )
+                if signal_type != "trend_breakout" and not reversal_confirmed:
+                    decision.vetoes.append("directional_reset_required")
+                    decision.state = "neutral"
+                    duplicate = store.seen(decision.dedup_key)
     should_notify = decision.state in ("signal", "strong_signal") or (
         notify_watch and decision.state == "watch"
     )
