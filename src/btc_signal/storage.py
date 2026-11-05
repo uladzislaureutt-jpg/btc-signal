@@ -17,6 +17,7 @@ class Store(Protocol):
     def cooldown_active(self, candle_time: str, hours: int) -> bool: ...
     def same_side_episode_active(self, side: str, candle_time: str, hours: int) -> bool: ...
     def recent_signal_side(self, candle_time: str, hours: int) -> str | None: ...
+    def most_recent_notified_signal(self, candle_time: str, hours: int) -> dict[str, str] | None: ...
     def save(self, decision: Decision, notified: bool) -> None: ...
 
 
@@ -86,6 +87,20 @@ class SQLiteStore:
             (threshold.isoformat(),),
         ).fetchone()
         return row[0] if row and row[0] else None
+
+    def most_recent_notified_signal(self, candle_time: str, hours: int) -> dict[str, str] | None:
+        end = datetime.fromisoformat(candle_time).astimezone(timezone.utc)
+        threshold = end - timedelta(hours=hours)
+        row = self.connection.execute(
+            """
+            select side, candle_time from signals
+            where state in ('signal', 'strong_signal') and notified = 1
+              and candle_time >= ? and candle_time < ?
+            order by candle_time desc limit 1
+            """,
+            (threshold.isoformat(), end.isoformat()),
+        ).fetchone()
+        return {"side": row[0], "candle_time": row[1]} if row else None
 
     def save(self, decision: Decision, notified: bool) -> None:
         self.connection.execute(
@@ -182,6 +197,27 @@ class SupabaseStore:
         response.raise_for_status()
         rows = response.json()
         return rows[0].get("side") if rows and rows[0].get("side") else None
+
+    def most_recent_notified_signal(self, candle_time: str, hours: int) -> dict[str, str] | None:
+        end = datetime.fromisoformat(candle_time).astimezone(timezone.utc)
+        threshold = end - timedelta(hours=hours)
+        response = requests.get(
+            self.endpoint,
+            headers=self.headers,
+            params={
+                "state": "in.(signal,strong_signal)",
+                "notified": "eq.true",
+                "candle_time": f"gte.{threshold.isoformat()}",
+                "and": f"(candle_time.lt.{end.isoformat()})",
+                "select": "side,candle_time",
+                "order": "candle_time.desc",
+                "limit": 1,
+            },
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        return {"side": rows[0]["side"], "candle_time": rows[0]["candle_time"]} if rows else None
 
     def save(self, decision: Decision, notified: bool) -> None:
         payload = decision.to_dict()

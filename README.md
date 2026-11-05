@@ -1,4 +1,4 @@
-# BTC Signal Core 0.4.1
+# BTC Signal Core 0.4.2
 
 Сервис формирует редкие торговые сигналы по `BTCUSDT perpetual`:
 
@@ -91,3 +91,10 @@ btc-signal backtest --days 240
 Рабочий `live` больше не использует прежний контртрендовый движок отскока от уровня. Он оставлен только как исторический исследовательский код.
 
 Это программный генератор сигналов, а не персональная финансовая рекомендация.
+
+
+### Operational entry-stage gates (0.4.2)
+
+EARLY LONG/SHORT are suppressed when the completed 4H close is more than 3 ATR from EMA200, or the live entry is less than 1 ATR from the prior 20-bar / 180-bar high or low in the trade direction. The limits are applied **only to EARLY entries**, leaving frozen 20-bar breakouts and FAST TREND detection unchanged. Near-extreme checks use the latest completed 4H candle and prior highs/lows, never future bars.
+
+Repeated same-side alerts are no longer released simply because 24 hours elapsed. The system examines the last **notified** entry within 30 days and requires a subsequent close-based countertrend pullback of at least 1.25 ATR with two consecutive countertrend closes before another alert in that direction. Opposite-side EARLY/FAST reversal confirmation is retained. The prior 24-hour time-based same-side suppression is replaced, not stacked. This entry-stage protection is an operational hypothesis and **has not been proven profitable by the frozen research backtests**.
