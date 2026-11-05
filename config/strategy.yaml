@@ -123,6 +123,14 @@ structure:
   late_entry_max_room_atr: 1.50
   minimum_tp1_r: 1.0
   minimum_tp2_r: 1.5
+  # Only for operational EARLY entries; leave FAST and frozen 20-bar unchanged.
+  early_max_ema_distance_atr: 3.0
+  early_min_extreme_room_atr: 1.0
+  swing_extreme_lookback_bars: 180
+  # Reset of same-side signals requires a meaningful close-based pullback.
+  episode_reset_lookback_hours: 720
+  episode_reset_pullback_atr: 1.25
+  episode_reset_counter_closes: 2
   episode_hours: 24
 
 # Operational early-short overlay. It does not alter the frozen 0.3.0
