@@ -35,6 +35,37 @@ def _fib_context(frame: pd.DataFrame, config: dict, price: float) -> dict[str, o
     }
 
 
+def assess_early_entry_stage(
+    *, side: str, price: float, close: float, ema_value: float,
+    atr_value: float, prior_20bar_extreme: float, prior_swing_extreme: float,
+    maximum_ema_distance_atr: float, minimum_extreme_room_atr: float,
+) -> tuple[dict[str, object], str | None]:
+    """Causal EARLY entry quality gate, independently testable on live snapshots."""
+    distance = abs(close - ema_value) / atr_value
+    if side == "short":
+        candidates = [x for x in (prior_20bar_extreme, prior_swing_extreme) if x < price]
+        nearest = max(candidates) if candidates else None
+        room = (price - nearest) / atr_value if nearest is not None else None
+    else:
+        candidates = [x for x in (prior_20bar_extreme, prior_swing_extreme) if x > price]
+        nearest = min(candidates) if candidates else None
+        room = (nearest - price) / atr_value if nearest is not None else None
+    stage = {
+        "ema_distance_atr": distance,
+        "maximum_ema_distance_atr": maximum_ema_distance_atr,
+        "prior_20bar_extreme": prior_20bar_extreme,
+        "prior_swing_extreme": prior_swing_extreme,
+        "nearest_extreme": nearest,
+        "extreme_room_atr": room,
+        "minimum_extreme_room_atr": minimum_extreme_room_atr,
+    }
+    if distance > maximum_ema_distance_atr:
+        return stage, "early_trend_overextended"
+    if room is not None and room < minimum_extreme_room_atr:
+        return stage, "early_entry_near_prior_extreme"
+    return stage, None
+
+
 def episode_reset_status(
     frame_4h: pd.DataFrame,
     previous_candle_time: str,
@@ -433,38 +464,25 @@ def evaluate_trend_signal(
     # to chase an extended trend. FAST and the frozen Donchian core remain
     # unchanged to preserve detection of genuine large initial impulses.
     if early_long_signal or early_short_signal:
-        ema_distance_atr = abs(values["close"] - values["ema"]) / values["atr"]
         previous_swings = frame.iloc[-1 - swing_extreme_lookback_bars : -1]
-        if side == "short":
-            prior_swing_extreme = float(previous_swings["low"].min())
-            candidates = [x for x in (values["prior_low"], prior_swing_extreme) if x < current_price]
-            nearest_extreme = max(candidates) if candidates else None
-            extreme_room_atr = (current_price - nearest_extreme) / values["atr"] if nearest_extreme is not None else None
-        else:
-            prior_swing_extreme = float(previous_swings["high"].max())
-            candidates = [x for x in (values["prior_high"], prior_swing_extreme) if x > current_price]
-            nearest_extreme = min(candidates) if candidates else None
-            extreme_room_atr = (nearest_extreme - current_price) / values["atr"] if nearest_extreme is not None else None
-        stage = {
-            "ema_distance_atr": ema_distance_atr,
-            "maximum_ema_distance_atr": early_max_ema_distance_atr,
-            "prior_20bar_extreme": values["prior_low"] if side == "short" else values["prior_high"],
-            "prior_swing_extreme": prior_swing_extreme,
-            "nearest_extreme": nearest_extreme,
-            "extreme_room_atr": extreme_room_atr,
-            "minimum_extreme_room_atr": early_min_extreme_room_atr,
-            "lookback_bars": swing_extreme_lookback_bars,
-        }
+        prior_swing_extreme = float(
+            previous_swings["low"].min() if side == "short"
+            else previous_swings["high"].max()
+        )
+        stage, stage_veto = assess_early_entry_stage(
+            side=side, price=current_price, close=values["close"], ema_value=values["ema"],
+            atr_value=values["atr"],
+            prior_20bar_extreme=values["prior_low"] if side == "short" else values["prior_high"],
+            prior_swing_extreme=prior_swing_extreme,
+            maximum_ema_distance_atr=early_max_ema_distance_atr,
+            minimum_extreme_room_atr=early_min_extreme_room_atr,
+        )
+        stage["lookback_bars"] = swing_extreme_lookback_bars
         base_factors["trend_stage"] = stage
-        if ema_distance_atr > early_max_ema_distance_atr:
+        if stage_veto:
             return _neutral(
                 timestamp=signal_time.isoformat(), price=current_price, provider=provider,
-                vetoes=["early_trend_overextended"], factors=base_factors,
-            )
-        if extreme_room_atr is not None and extreme_room_atr < early_min_extreme_room_atr:
-            return _neutral(
-                timestamp=signal_time.isoformat(), price=current_price, provider=provider,
-                vetoes=["early_entry_near_prior_extreme"], factors=base_factors,
+                vetoes=[stage_veto], factors=base_factors,
             )
 
     risk = stop_atr * values["atr"]
