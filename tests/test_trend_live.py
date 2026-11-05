@@ -3,7 +3,7 @@ import json
 import pandas as pd
 
 from btc_signal.strategy import Decision
-from btc_signal.trend_live import evaluate_trend_signal
+from btc_signal.trend_live import assess_early_entry_stage, episode_reset_status, evaluate_trend_signal
 from conftest import candles, config
 
 
@@ -71,6 +71,8 @@ def test_early_short_requires_confirmed_breakdown_below_ema():
     old_idx = frame.index[-10]
     frame.loc[old_idx, "low"] = stair[-1] - 1800.0
     cfg = config()
+    cfg["structure"]["early_max_ema_distance_atr"] = 999.0
+    cfg["structure"]["early_min_extreme_room_atr"] = 0.0
     cfg["fast_trend"]["enabled"] = False
     cfg["structure"]["late_entry_max_room_atr"] = 0.0
     cfg["structure"]["minimum_tp1_r"] = 0.0
@@ -115,6 +117,8 @@ def test_early_long_requires_confirmed_recovery_above_ema():
     old_idx = frame.index[-10]
     frame.loc[old_idx, "high"] = stair[-1] + 1600.0
     cfg = config()
+    cfg["structure"]["early_max_ema_distance_atr"] = 999.0
+    cfg["structure"]["early_min_extreme_room_atr"] = 0.0
     cfg["fast_trend"]["enabled"] = False
     cfg["structure"]["minimum_tp1_r"] = 0.0
     cfg["structure"]["minimum_tp2_r"] = 0.0
@@ -184,6 +188,8 @@ def test_structural_fibonacci_caps_short_targets_and_blocks_late_entry():
         frame.loc[idx, "high"] = close + 500.0
         frame.loc[idx, "low"] = close - 500.0
     cfg = config()
+    cfg["structure"]["early_max_ema_distance_atr"] = 999.0
+    cfg["structure"]["early_min_extreme_room_atr"] = 0.0
     cfg["fast_trend"]["enabled"] = False
     cfg["trend_bidirectional"]["min_risk_to_cost"] = 0.0
     cfg["trend_bidirectional"]["ema_period"] = 2
@@ -223,6 +229,8 @@ def test_structural_target_skips_too_close_level_and_preserves_minimum_reward():
         frame.loc[idx, "high"] = close + 500.0
         frame.loc[idx, "low"] = close - 500.0
     cfg = config()
+    cfg["structure"]["early_max_ema_distance_atr"] = 999.0
+    cfg["structure"]["early_min_extreme_room_atr"] = 0.0
     cfg["trend_bidirectional"]["min_risk_to_cost"] = 0.0
     cfg["structure"]["late_entry_max_room_atr"] = 0.0
     now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
@@ -257,6 +265,8 @@ def test_signal_is_rejected_when_no_structural_level_offers_one_r():
         frame.loc[idx, "high"] = close + 500.0
         frame.loc[idx, "low"] = close - 500.0
     cfg = config()
+    cfg["structure"]["early_max_ema_distance_atr"] = 999.0
+    cfg["structure"]["early_min_extreme_room_atr"] = 0.0
     cfg["trend_bidirectional"]["min_risk_to_cost"] = 0.0
     cfg["structure"]["late_entry_max_room_atr"] = 0.0
     now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
@@ -350,3 +360,85 @@ def test_same_breakout_deduplicates_when_live_price_moves():
     second = evaluate_trend_signal(frame, config(), "test_perpetual", 55_100.0, now=now)
     assert first.state == second.state == "signal"
     assert first.dedup_key == second.dedup_key
+
+
+def test_production_three_short_stage_replay():
+    """Frozen 0.4.1 production snapshots: no OHLC lookahead, no synthetic prices."""
+    cases = [
+        # candle, entry, close, ema, atr, 20-bar floor, 30-day floor, expected veto
+        ("2026-10-26", 79690.2, 79560.3, 82016.5986365635, 744.4771250947526, 79168.0, 79168.0),
+        ("2026-11-02", 77540.1, 77486.2, 81155.84049338721, 746.5008954905356, 76260.0, 76260.0),
+        ("2026-11-04", 76609.7, 76450.2, 81149.24544870135, 816.4275250292864, 76360.0, 75690.1),
+    ]
+    for date, entry, close, ema_value, atr_value, prior_low, swing_low in cases:
+        stage, veto = assess_early_entry_stage(
+            side="short", price=entry, close=close, ema_value=ema_value,
+            atr_value=atr_value, prior_20bar_extreme=prior_low,
+            prior_swing_extreme=swing_low, maximum_ema_distance_atr=3.0,
+            minimum_extreme_room_atr=1.0,
+        )
+        assert veto == "early_trend_overextended", date
+        assert stage["ema_distance_atr"] > 3.0
+
+
+def test_prior_support_veto_is_not_replaced_by_fibonacci():
+    stage, veto = assess_early_entry_stage(
+        side="short", price=76609.7, close=76450.2, ema_value=81149.2454,
+        atr_value=816.4275, prior_20bar_extreme=76360.0,
+        prior_swing_extreme=75690.1, maximum_ema_distance_atr=99.0,
+        minimum_extreme_room_atr=1.0,
+    )
+    assert veto == "early_entry_near_prior_extreme"
+    assert 0 < stage["extreme_room_atr"] < 0.35
+    assert stage["nearest_extreme"] == 76360.0
+
+
+def test_both_sides_have_symmetric_stage_guards():
+    _, veto = assess_early_entry_stage(
+        side="long", price=60900.0, close=60800.0, ema_value=58500.0,
+        atr_value=800.0, prior_20bar_extreme=61000.0,
+        prior_swing_extreme=62000.0, maximum_ema_distance_atr=3.0,
+        minimum_extreme_room_atr=1.0,
+    )
+    assert veto == "early_entry_near_prior_extreme"
+
+
+def test_episode_reset_requires_real_countertrend_pullback():
+    frame = candles(260, freq="4h", trend=0.0)
+    values = [80000, 79500, 79000, 79200, 79500, 79600, 79200, 78800]
+    for idx, close in zip(frame.index[-8:], values):
+        frame.loc[idx, "close"] = close
+    start = pd.Timestamp(frame["close_time"].iloc[-8]).isoformat()
+    end = pd.Timestamp(frame["close_time"].iloc[-1]).isoformat()
+    confirmed = episode_reset_status(
+        frame, start, end, "short", 400.0,
+        minimum_pullback_atr=1.25, minimum_counter_closes=2,
+    )
+    assert confirmed["confirmed"] is True
+    assert confirmed["maximum_pullback_atr"] >= 1.25
+
+
+def test_episode_reset_stays_locked_without_meaningful_retracement():
+    frame = candles(260, freq="4h", trend=0.0)
+    values = [80000, 79800, 79500, 79600, 79400, 79000, 78900, 78500]
+    for idx, close in zip(frame.index[-8:], values):
+        frame.loc[idx, "close"] = close
+    status = episode_reset_status(
+        frame, pd.Timestamp(frame["close_time"].iloc[-8]).isoformat(),
+        pd.Timestamp(frame["close_time"].iloc[-1]).isoformat(),
+        "short", 400.0, minimum_pullback_atr=1.25, minimum_counter_closes=2,
+    )
+    assert status["confirmed"] is False
+
+
+def test_episode_reset_stays_locked_when_only_one_countertrend_close():
+    frame = candles(260, freq="4h", trend=0.0)
+    values = [80000, 79000, 79600, 78900, 78400, 78000, 77700, 77300]
+    for idx, close in zip(frame.index[-8:], values):
+        frame.loc[idx, "close"] = close
+    status = episode_reset_status(
+        frame, pd.Timestamp(frame["close_time"].iloc[-8]).isoformat(),
+        pd.Timestamp(frame["close_time"].iloc[-1]).isoformat(),
+        "short", 400.0, minimum_pullback_atr=1.25, minimum_counter_closes=2,
+    )
+    assert status["confirmed"] is False
