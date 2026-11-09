@@ -32,7 +32,7 @@ def test_long_signal_contains_entry_stop_targets_and_trailing_plan():
     assert decision.entry_low == decision.entry_high == 55_000.0
     assert decision.stop < decision.entry_low < decision.target_1 < decision.target_2
     assert decision.factors["exit_plan"]["trailing_distance_atr"] == 3.0
-    assert decision.strategy_version == "0.4.2"
+    assert decision.strategy_version == "0.4.3"
 
 
 def test_short_signal_has_reversed_price_geometry():
@@ -307,7 +307,7 @@ def test_fast_short_catches_strong_impulse_before_second_ema_close():
     assert decision.factors["signal_type"]["value"] == "fast_trend_short"
     assert decision.factors["fast_trend"]["confirmed"] is True
     assert decision.factors["early_short"]["ema_confirmed"] is False
-    assert decision.strategy_version == "0.4.2"
+    assert decision.strategy_version == "0.4.3"
 
 
 def test_decision_payload_replaces_non_finite_values_with_null():
