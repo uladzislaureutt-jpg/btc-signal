@@ -583,3 +583,23 @@ def test_crash_path_in_real_signal_evaluator():
     assert result.state == "signal"
     assert result.side == "short"
     assert result.factors["signal_type"]["value"] == "crash_impulse_short"
+
+
+def test_base_consolidation_reentry_in_full_signal_evaluator():
+    frame = candles(260, freq="4h", trend=0.0)
+    for column in ("open", "high", "low", "close"):
+        frame[column] += 30_000
+    frame.loc[frame.index[-10], "low"] = 74_800.1
+    base_closes = [75_940, 75_900, 75_920, 76_035, 75_893, 75_829.9, 74_818.1]
+    for idx, close in zip(frame.index[-7:], base_closes):
+        frame.loc[idx, "open"] = close + 80
+        frame.loc[idx, "close"] = close
+        frame.loc[idx, "high"] = close + 250
+        frame.loc[idx, "low"] = close - 250
+    frame.loc[frame.index[-10], "low"] = 74_800.1
+    now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
+    decision = evaluate_trend_signal(frame, config(), "test_perpetual", 74_606.5, now=now)
+    assert decision.state == "signal", (decision.vetoes, decision.factors.get("exceptional_short"))
+    assert decision.side == "short"
+    assert decision.factors["signal_type"]["value"] == "base_breakout_short"
+    assert decision.factors["trend"]["ema"] - decision.factors["trend"]["close"] > 3 * decision.factors["volatility"]["atr"]
