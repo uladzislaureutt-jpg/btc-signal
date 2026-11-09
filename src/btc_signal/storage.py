@@ -17,6 +17,7 @@ class Store(Protocol):
     def cooldown_active(self, candle_time: str, hours: int) -> bool: ...
     def same_side_episode_active(self, side: str, candle_time: str, hours: int) -> bool: ...
     def recent_signal_side(self, candle_time: str, hours: int) -> str | None: ...
+    def most_recent_candle_before(self, candle_time: str) -> str | None: ...
     def most_recent_notified_signal(self, candle_time: str, hours: int) -> dict[str, str] | None: ...
     def save(self, decision: Decision, notified: bool) -> None: ...
 
@@ -87,6 +88,13 @@ class SQLiteStore:
             (threshold.isoformat(),),
         ).fetchone()
         return row[0] if row and row[0] else None
+
+    def most_recent_candle_before(self, candle_time: str) -> str | None:
+        row = self.connection.execute(
+            "select candle_time from signals where candle_time < ? order by candle_time desc limit 1",
+            (candle_time,),
+        ).fetchone()
+        return row[0] if row else None
 
     def most_recent_notified_signal(self, candle_time: str, hours: int) -> dict[str, str] | None:
         end = datetime.fromisoformat(candle_time).astimezone(timezone.utc)
@@ -197,6 +205,22 @@ class SupabaseStore:
         response.raise_for_status()
         rows = response.json()
         return rows[0].get("side") if rows and rows[0].get("side") else None
+
+    def most_recent_candle_before(self, candle_time: str) -> str | None:
+        response = requests.get(
+            self.endpoint,
+            headers=self.headers,
+            params={
+                "candle_time": f"lt.{candle_time}",
+                "select": "candle_time",
+                "order": "candle_time.desc",
+                "limit": 1,
+            },
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        return rows[0]["candle_time"] if rows else None
 
     def most_recent_notified_signal(self, candle_time: str, hours: int) -> dict[str, str] | None:
         end = datetime.fromisoformat(candle_time).astimezone(timezone.utc)
