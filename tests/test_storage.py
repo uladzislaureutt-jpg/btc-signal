@@ -59,3 +59,43 @@ def test_supabase_episode_query_filters_notified_and_no_future(monkeypatch):
     assert captured["notified"] == "eq.true"
     assert captured["order"] == "candle_time.desc"
     assert "candle_time.lt." in captured["and"]
+
+
+def test_sqlite_coverage_returns_previous_record_only(tmp_path):
+    from btc_signal.storage import SQLiteStore
+    from btc_signal.strategy import Decision
+
+    store = SQLiteStore(tmp_path / "coverage.sqlite")
+    def neutral(t):
+        return Decision(
+            timestamp=t, state="neutral", side=None, score=0, price=50_000,
+            entry_low=None, entry_high=None, stop=None, target_1=None,
+            target_2=None, rr=None, regime="test", level=None,
+            factors={}, vetoes=[], strategy_version="0.4.3",
+        )
+    first = "2026-11-05T11:59:59.999+00:00"
+    second = "2026-11-05T19:59:59.999+00:00"
+    store.save(neutral(first), False)
+    store.save(neutral(second), False)
+    assert store.most_recent_candle_before(second) == first
+    assert store.most_recent_candle_before(first) is None
+
+
+def test_supabase_coverage_query_uses_strictly_earlier_candle(monkeypatch):
+    from btc_signal.storage import SupabaseStore
+    captured = {}
+    class Response:
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return [{"candle_time": "2026-11-05T11:59:59.999+00:00"}]
+    def fake_get(url, *, headers, params, timeout):
+        captured.update(params)
+        return Response()
+    monkeypatch.setattr("btc_signal.storage.requests.get", fake_get)
+    prior = SupabaseStore("https://example.supabase.co", "sb_secret_example").most_recent_candle_before(
+        "2026-11-05T19:59:59.999+00:00"
+    )
+    assert prior == "2026-11-05T11:59:59.999+00:00"
+    assert captured["candle_time"].startswith("lt.")
+    assert captured["order"] == "candle_time.desc"
