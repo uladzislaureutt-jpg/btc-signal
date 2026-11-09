@@ -520,11 +520,11 @@ def evaluate_trend_signal(
     crash_long_signal = not long_signal and not fast_long_signal and bool(exception_long["crash"])
     base_short_signal = (
         not short_signal and not fast_short_signal and not crash_short_signal
-        and bool(exception_short["base"])
+        and bool(exception_short["base"]) and short_ema_confirmed
     )
     base_long_signal = (
         not long_signal and not fast_long_signal and not crash_long_signal
-        and bool(exception_long["base"])
+        and bool(exception_long["base"]) and long_ema_confirmed
     )
     base_factors["exceptional_short"] = exception_short
     base_factors["exceptional_long"] = exception_long
