@@ -66,6 +66,102 @@ def assess_early_entry_stage(
     return stage, None
 
 
+def assess_exceptional_entry(
+    frame: pd.DataFrame, config: dict, *, side: str, price: float,
+    close: float, ema_value: float, atr_value: float,
+    prior_20bar_extreme: float, prior_swing_extreme: float,
+    momentum_atr: float, directional_closes: int,
+    close_breakout_atr: float, previous_ema: float,
+) -> dict[str, object]:
+    """Evaluate one-candle shock or fresh base breakout using only closed bars.
+
+    These are separate operational entry routes, not modifications to the
+    frozen 20-bar research engine. Protect both paths from late entries near
+    old swing extremes and large price rebounds after candle close.
+    """
+    crash_cfg = config.get("crash_impulse", {})
+    base_cfg = config.get("base_breakout", {})
+    previous = frame.iloc[-2]
+    latest = frame.iloc[-1]
+    prev_close = float(previous["close"])
+    candle_open = float(latest["open"])
+    candle_high = float(latest["high"])
+    candle_low = float(latest["low"])
+    candle_range = candle_high - candle_low
+    if side == "short":
+        one_bar_change_atr = (prev_close - close) / atr_value
+        body_atr = (candle_open - close) / atr_value
+        close_location = (close - candle_low) / candle_range if candle_range > 0 else 0.5
+        previous_extension_atr = (previous_ema - prev_close) / atr_value
+        extrema_ahead = [x for x in (prior_20bar_extreme, prior_swing_extreme) if x < price]
+        nearest_extreme = max(extrema_ahead) if extrema_ahead else None
+        extreme_room_atr = (price - nearest_extreme) / atr_value if nearest_extreme is not None else None
+        penetration_atr = max(0.0, (prior_20bar_extreme - price) / atr_value)
+        ema_separation_atr = (ema_value - close) / atr_value
+    else:
+        one_bar_change_atr = (close - prev_close) / atr_value
+        body_atr = (close - candle_open) / atr_value
+        close_location = (candle_high - close) / candle_range if candle_range > 0 else 0.5
+        previous_extension_atr = (prev_close - previous_ema) / atr_value
+        extrema_ahead = [x for x in (prior_20bar_extreme, prior_swing_extreme) if x > price]
+        nearest_extreme = min(extrema_ahead) if extrema_ahead else None
+        extreme_room_atr = (nearest_extreme - price) / atr_value if nearest_extreme is not None else None
+        penetration_atr = max(0.0, (price - prior_20bar_extreme) / atr_value)
+        ema_separation_atr = (close - ema_value) / atr_value
+
+    def safe_structure(cfg: dict) -> bool:
+        minimum_room = float(cfg.get("min_extreme_room_atr", 1.0))
+        maximum_penetration = float(cfg.get("max_extreme_penetration_atr", 0.75))
+        max_entry_deviation = float(cfg.get("max_entry_deviation_atr", 0.60))
+        return (
+            (extreme_room_atr is None or extreme_room_atr >= minimum_room)
+            and penetration_atr <= maximum_penetration
+            and abs(price - close) / atr_value <= max_entry_deviation
+        )
+
+    width_bars = max(2, int(base_cfg.get("consolidation_bars", 6)))
+    prior_closes = frame["close"].iloc[-1 - width_bars:-1]
+    close_range_atr = (
+        (float(prior_closes.max()) - float(prior_closes.min())) / atr_value
+        if len(prior_closes) == width_bars else float("inf")
+    )
+    crash = (
+        bool(crash_cfg.get("enabled", False))
+        and one_bar_change_atr >= float(crash_cfg.get("min_single_close_move_atr", 2.0))
+        and body_atr >= float(crash_cfg.get("min_candle_body_atr", 1.25))
+        and close_location <= float(crash_cfg.get("max_close_location", 0.30))
+        and previous_extension_atr <= float(crash_cfg.get("max_previous_ema_distance_atr", 3.0))
+        and ema_separation_atr >= float(crash_cfg.get("min_ema_separation_atr", 0.25))
+        and safe_structure(crash_cfg)
+    )
+    base = (
+        bool(base_cfg.get("enabled", False))
+        and close_range_atr <= float(base_cfg.get("max_close_range_atr", 1.25))
+        and close_breakout_atr >= float(base_cfg.get("min_close_breakout_atr", 0.80))
+        and momentum_atr >= float(base_cfg.get("min_momentum_atr", 1.25))
+        and directional_closes >= int(base_cfg.get("min_directional_closes", 2))
+        and ema_separation_atr >= float(base_cfg.get("min_ema_separation_atr", 0.25))
+        and safe_structure(base_cfg)
+    )
+    return {
+        "crash": bool(crash),
+        "base": bool(base),
+        "single_close_move_atr": one_bar_change_atr,
+        "body_atr": body_atr,
+        "close_location": close_location,
+        "previous_ema_extension_atr": previous_extension_atr,
+        "base_close_range_atr": close_range_atr,
+        "close_breakout_atr": close_breakout_atr,
+        "momentum_atr": momentum_atr,
+        "directional_closes": directional_closes,
+        "ema_separation_atr": ema_separation_atr,
+        "nearest_extreme": nearest_extreme,
+        "extreme_room_atr": extreme_room_atr,
+        "prior_extreme_penetration_atr": penetration_atr,
+        "entry_deviation_atr": abs(price - close) / atr_value,
+    }
+
+
 def episode_reset_status(
     frame_4h: pd.DataFrame,
     previous_candle_time: str,
@@ -144,7 +240,7 @@ def _neutral(
         factors=factors,
         vetoes=vetoes,
         provider=provider,
-        strategy_version="0.4.2",
+        strategy_version="0.4.3",
     )
 
 
@@ -402,6 +498,36 @@ def evaluate_trend_signal(
         "reversal_minimum_ema_separation_atr": fast_reversal_min_ema_sep_atr,
         "reversal_confirmed": bool(fast_reversal_confirmed),
     }
+    exception_short = assess_exceptional_entry(
+        frame, config, side="short", price=current_price, close=values["close"],
+        ema_value=values["ema"], atr_value=values["atr"],
+        prior_20bar_extreme=values["prior_low"],
+        prior_swing_extreme=float(frame["low"].iloc[-181:-1].min()),
+        momentum_atr=momentum_atr, directional_closes=lower_closes,
+        close_breakout_atr=close_breakout_atr,
+        previous_ema=float(frame["ema"].iloc[-2]),
+    )
+    exception_long = assess_exceptional_entry(
+        frame, config, side="long", price=current_price, close=values["close"],
+        ema_value=values["ema"], atr_value=values["atr"],
+        prior_20bar_extreme=values["prior_high"],
+        prior_swing_extreme=float(frame["high"].iloc[-181:-1].max()),
+        momentum_atr=long_momentum_atr, directional_closes=higher_closes,
+        close_breakout_atr=close_up_breakout_atr,
+        previous_ema=float(frame["ema"].iloc[-2]),
+    )
+    crash_short_signal = not short_signal and not fast_short_signal and bool(exception_short["crash"])
+    crash_long_signal = not long_signal and not fast_long_signal and bool(exception_long["crash"])
+    base_short_signal = (
+        not short_signal and not fast_short_signal and not crash_short_signal
+        and bool(exception_short["base"]) and short_ema_confirmed
+    )
+    base_long_signal = (
+        not long_signal and not fast_long_signal and not crash_long_signal
+        and bool(exception_long["base"]) and long_ema_confirmed
+    )
+    base_factors["exceptional_short"] = exception_short
+    base_factors["exceptional_long"] = exception_long
     base_factors["early_long"] = {
         "enabled": early_long_enabled,
         "wick_breakout_atr": upside_breakout_atr,
@@ -423,7 +549,7 @@ def evaluate_trend_signal(
         "reversal_confirmed": long_reversal_confirmed,
         "above_ema200": values["close"] >= values["ema"],
     }
-    if not long_signal and not short_signal and not fast_short_signal and not fast_long_signal and not early_short_signal and not early_long_signal:
+    if not any((long_signal, short_signal, fast_short_signal, fast_long_signal, crash_short_signal, crash_long_signal, base_short_signal, base_long_signal, early_short_signal, early_long_signal)):
         return _neutral(
             timestamp=signal_time.isoformat(),
             price=current_price,
@@ -447,11 +573,19 @@ def evaluate_trend_signal(
             factors=base_factors,
         )
 
-    side = "long" if (long_signal or fast_long_signal or early_long_signal) else "short"
+    side = "long" if (long_signal or fast_long_signal or crash_long_signal or base_long_signal or early_long_signal) else "short"
     if fast_long_signal:
         signal_type = "fast_trend_long"
     elif fast_short_signal:
         signal_type = "fast_trend_short"
+    elif crash_long_signal:
+        signal_type = "crash_impulse_long"
+    elif crash_short_signal:
+        signal_type = "crash_impulse_short"
+    elif base_long_signal:
+        signal_type = "base_breakout_long"
+    elif base_short_signal:
+        signal_type = "base_breakout_short"
     elif early_long_signal:
         signal_type = "confirmed_early_long"
     elif early_short_signal:
@@ -463,7 +597,7 @@ def evaluate_trend_signal(
     # EARLY is an entry ahead of a confirmed 20-bar breakout, not permission
     # to chase an extended trend. FAST and the frozen Donchian core remain
     # unchanged to preserve detection of genuine large initial impulses.
-    if early_long_signal or early_short_signal:
+    if (early_long_signal or early_short_signal) and not (base_long_signal or base_short_signal or crash_long_signal or crash_short_signal):
         previous_swings = frame.iloc[-1 - swing_extreme_lookback_bars : -1]
         prior_swing_extreme = float(
             previous_swings["low"].min() if side == "short"
@@ -522,7 +656,7 @@ def evaluate_trend_signal(
         (side == "short" and fib.get("direction") == "up")
         or (side == "long" and fib.get("direction") == "down")
     )
-    fast_signal = bool(fast_long_signal or fast_short_signal)
+    fast_signal = bool(fast_long_signal or fast_short_signal or crash_long_signal or crash_short_signal or base_long_signal or base_short_signal)
     if not fast_signal and matching_retracement and progress >= late_after and room_atr < late_room_atr:
         return _neutral(
             timestamp=signal_time.isoformat(),
@@ -643,9 +777,9 @@ def evaluate_trend_signal(
             "target_2_is_reference": True,
         },
     }
-    if fast_long_signal:
+    if fast_long_signal or crash_long_signal or base_long_signal:
         channel = values["prior_close_high"]
-    elif fast_short_signal:
+    elif fast_short_signal or crash_short_signal or base_short_signal:
         channel = values["prior_close_low"]
     elif early_long_signal and close_up_breakout:
         channel = values["prior_close_high"]
@@ -659,13 +793,18 @@ def evaluate_trend_signal(
         channel = momentum_reference
     else:
         channel = values["prior_low"]
-    level_type = "fast_trend" if fast_signal else ("early_long" if early_long_signal else ("early_short" if early_short_signal else "donchian_breakout"))
+    level_type = (
+        "crash_impulse" if crash_short_signal or crash_long_signal
+        else ("base_breakout" if base_short_signal or base_long_signal
+        else ("fast_trend" if fast_long_signal or fast_short_signal
+        else ("early_long" if early_long_signal else ("early_short" if early_short_signal else "donchian_breakout"))))
+    )
     factors["signal_type"] = {"value": signal_type}
     return Decision(
         timestamp=signal_time.isoformat(),
         state="signal",
         side=side,
-        score=(100 if signal_type == "trend_breakout" else (95 if fast_signal else 90)),
+        score=(100 if signal_type == "trend_breakout" else (95 if fast_signal and not (base_long_signal or base_short_signal) else (92 if base_long_signal or base_short_signal else 90))),
         price=current_price,
         entry_low=current_price,
         entry_high=current_price,
@@ -674,8 +813,12 @@ def evaluate_trend_signal(
         target_2=target_2,
         rr=target_2_r,
         regime=(
-            ("fast_long_above_ema200" if side == "long" else "fast_short_below_ema200")
-            if fast_signal
+            ("crash_long_above_ema200" if side == "long" else "crash_short_below_ema200")
+            if crash_long_signal or crash_short_signal
+            else (("base_long_above_ema200" if side == "long" else "base_short_below_ema200")
+            if base_long_signal or base_short_signal
+            else (("fast_long_above_ema200" if side == "long" else "fast_short_below_ema200")
+            if fast_long_signal or fast_short_signal
             else (
                 "early_long_above_ema200" if early_long_signal
                 else (
@@ -683,11 +826,11 @@ def evaluate_trend_signal(
                     if early_short_signal
                     else ("above_ema200" if side == "long" else "below_ema200")
                 )
-            )
+            )))
         ),
         level={"type": level_type, "bars": breakout_bars, "price": channel},
         factors=factors,
         vetoes=[],
         provider=provider,
-        strategy_version="0.4.2",
+        strategy_version="0.4.3",
     )

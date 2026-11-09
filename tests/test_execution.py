@@ -105,6 +105,8 @@ def test_runner_does_not_repeat_short_without_structural_reset(monkeypatch):
             return False
         def cooldown_active(self, candle_time, hours):
             return False
+        def most_recent_candle_before(self, candle_time):
+            return None
         def most_recent_notified_signal(self, candle_time, hours):
             return {"side": "short", "candle_time": previous_candle}
         def save(self, decision, notified):
@@ -156,6 +158,8 @@ def test_runner_allows_new_short_after_confirmed_pullback(monkeypatch):
             return False
         def cooldown_active(self, candle_time, hours):
             return False
+        def most_recent_candle_before(self, candle_time):
+            return None
         def most_recent_notified_signal(self, candle_time, hours):
             return {"side": "short", "candle_time": previous_candle}
         def save(self, decision, notified):
@@ -186,3 +190,41 @@ def test_runner_allows_new_short_after_confirmed_pullback(monkeypatch):
     assert result.decision.factors["episode_reset"]["confirmed"] is True
     assert len(sent) == 1
     assert store.saved[1] is True
+
+
+def test_gap_between_candle_slots_is_logged_without_replaying_old_signal(monkeypatch, capsys):
+    from btc_signal import runner
+    from conftest import candles
+    frame = candles(260, freq="4h", trend=0.0)
+    current = pd.Timestamp(frame["close_time"].iloc[-1])
+    previous = current - pd.Timedelta(hours=8)
+    class Market:
+        last_provider = "test"
+        def snapshot(self, **kwargs):
+            return {"4h": frame}, 50_000.0
+    class Store:
+        def seen(self, key):
+            return False
+        def most_recent_candle_before(self, candle_time):
+            return previous.isoformat()
+        def save(self, decision, notified):
+            self.saved = (decision, notified)
+    store = Store()
+    def neutral(*args, **kwargs):
+        return Decision(
+            timestamp=current.isoformat(), state="neutral", side=None, score=0,
+            price=50_000.0, entry_low=None, entry_high=None, stop=None,
+            target_1=None, target_2=None, rr=None, regime="no_breakout",
+            level=None, factors={}, vetoes=["no_4h_trend_breakout"],
+            strategy_version="0.4.3",
+        )
+    monkeypatch.setattr(runner, "load_config", config)
+    monkeypatch.setattr(runner, "build_market_data", lambda cfg: Market())
+    monkeypatch.setattr(runner, "evaluate_trend_signal", neutral)
+    monkeypatch.setattr(runner, "build_store", lambda: store)
+    monkeypatch.setattr(runner, "send", lambda d: (_ for _ in ()).throw(AssertionError("no stale alert")))
+    result = runner.run_once()
+    assert result.notified is False
+    assert result.decision.factors["coverage"]["missed_4h_bars"] == 1
+    assert "::warning::" in capsys.readouterr().out
+    assert store.saved[1] is False

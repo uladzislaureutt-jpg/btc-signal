@@ -2,8 +2,11 @@ name: BTC trend signal
 
 on:
   workflow_dispatch:
+  # Native backup 10 minutes after the external :07 dispatcher. GitHub's
+  # schedule is best-effort; it catches many missed external invocations
+  # without increasing the 4-hour frequency.
   schedule:
-    - cron: "7 */4 * * *"
+    - cron: "17 */4 * * *"
   push:
     branches: [main]
     paths:

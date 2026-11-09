@@ -35,6 +35,25 @@ def run_once(dry_run: bool = False, notify_watch: bool = True) -> RunResult:
     if dry_run:
         return RunResult(decision=decision, duplicate=False, notified=False)
     store = build_store()
+    prior_record = store.most_recent_candle_before(decision.timestamp)
+    if prior_record:
+        current_closed = datetime.fromisoformat(decision.timestamp).astimezone(timezone.utc)
+        previous_closed = datetime.fromisoformat(prior_record).astimezone(timezone.utc)
+        # All candle times use the same millisecond-precise 4h close convention.
+        elapsed_hours = (current_closed - previous_closed).total_seconds() / 3600.0
+        missed_bars = max(0, round(elapsed_hours / 4.0) - 1)
+        if missed_bars:
+            decision.factors["coverage"] = {
+                "previous_candle_time": prior_record,
+                "current_candle_time": decision.timestamp,
+                "missed_4h_bars": missed_bars,
+            }
+            print(
+                f"::warning::BTC 4h monitor missed {missed_bars} candle(s) "
+                f"between {prior_record} and {decision.timestamp}; "
+                "historical signals are not sent retroactively.",
+                flush=True,
+            )
     duplicate = store.seen(decision.dedup_key)
     if not duplicate and decision.state in ("signal", "strong_signal") and store.cooldown_active(
         decision.timestamp, int(config["signal"]["cooldown_hours"])

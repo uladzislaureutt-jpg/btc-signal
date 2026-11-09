@@ -1,4 +1,4 @@
-# BTC Signal Core 0.4.2
+# BTC Signal Core 0.4.3
 
 Сервис формирует редкие торговые сигналы по `BTCUSDT perpetual`:
 
@@ -98,3 +98,37 @@ btc-signal backtest --days 240
 EARLY LONG/SHORT are suppressed when the completed 4H close is more than 3 ATR from EMA200, or the live entry is less than 1 ATR from the prior 20-bar / 180-bar high or low in the trade direction. The limits are applied **only to EARLY entries**, leaving frozen 20-bar breakouts and FAST TREND detection unchanged. Near-extreme checks use the latest completed 4H candle and prior highs/lows, never future bars.
 
 Repeated same-side alerts are no longer released simply because 24 hours elapsed. The system examines the last **notified** entry within 30 days and requires a subsequent close-based countertrend pullback of at least 1.25 ATR with two consecutive countertrend closes before another alert in that direction. Opposite-side EARLY/FAST reversal confirmation is retained. The prior 24-hour time-based same-side suppression is replaced, not stacked. This entry-stage protection is an operational hypothesis and **has not been proven profitable by the frozen research backtests**.
+
+
+### Exceptional 4H moves (operational release 0.4.3)
+
+Two **additional**, symmetric live entry routes prevent one-candle crashes and
+post-consolidation breakouts from falling through the old 3-consecutive-closes
+and absolute 3-ATR EMA gates:
+
+- `crash_impulse_long/short`: one closed 4H close-to-close move >= 2.0 ATR,
+  real candle body >= 1.25 ATR, close in the extreme 30% of the candle, EMA
+  separation >= 0.25 ATR. The *previous* candle must not already have been
+  stretched > 3 ATR from its EMA. No three-bar streak is necessary.
+- `base_breakout_long/short`: six previous closes inside a 1.25 ATR range,
+  fresh 6-bar close-level breakout >= 0.8 ATR, >= 1.25 ATR 3-bar momentum,
+  at least two directional closes and two bars on the appropriate EMA side.
+  The current distance to EMA may exceed 3 ATR only on this confirmed new base.
+- **Both routes** refuse a new entry closer than 1 ATR to an old 20/180-bar
+  extreme in the trade direction, more than 0.75 ATR beyond the prior
+  20-bar wick extreme, or more than 0.6 ATR away from the last closed price.
+  Fibonacci is still used to construct targets and the ATR stop is unchanged.
+- Frozen research 20-bar Donchian signals, ordinary EARLY stage checks, and
+  the original multi-candle FAST rules remain intact. These new live filters
+  are **not** supported by an independently validated historical return study.
+
+### Missed scheduler slot diagnostics
+
+The external dispatcher at four-hour candle close + 7 minutes stays primary.
+The existing GitHub native fallback is now offset to close + 17 minutes
+(`17 */4 * * *`), **without an additional schedule**. On the next successful
+live execution, if a previous 4H record is missing in Supabase/SQLite, the
+runner emits a GitHub Actions warning and includes a `coverage` diagnostic
+in the stored decision. It never sends retroactive entry signals. GitHub's
+native scheduler is best-effort and cannot guarantee recovery from a missed
+external dispatch; availability must still be monitored.
