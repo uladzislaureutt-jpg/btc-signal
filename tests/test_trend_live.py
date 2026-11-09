@@ -3,7 +3,7 @@ import json
 import pandas as pd
 
 from btc_signal.strategy import Decision
-from btc_signal.trend_live import assess_early_entry_stage, episode_reset_status, evaluate_trend_signal
+from btc_signal.trend_live import assess_early_entry_stage, assess_exceptional_entry, episode_reset_status, evaluate_trend_signal
 from conftest import candles, config
 
 
@@ -442,3 +442,144 @@ def test_episode_reset_stays_locked_when_only_one_countertrend_close():
         "short", 400.0, minimum_pullback_atr=1.25, minimum_counter_closes=2,
     )
     assert status["confirmed"] is False
+
+
+def _exception_frame(prev_close: float, close: float, opening: float, high: float, low: float):
+    frame = candles(260, freq="4h", trend=0.0)
+    prev = frame.index[-2]
+    current = frame.index[-1]
+    frame.loc[prev, "close"] = prev_close
+    frame.loc[current, "open"] = opening
+    frame.loc[current, "close"] = close
+    frame.loc[current, "high"] = high
+    frame.loc[current, "low"] = low
+    return frame
+
+
+def test_new_crash_route_catches_one_bar_without_three_lower_closes():
+    frame = _exception_frame(50_000, 47_500, 50_000, 50_100, 47_400)
+    result = assess_exceptional_entry(
+        frame, config(), side="short", price=47_500, close=47_500,
+        ema_value=49_700, atr_value=800, prior_20bar_extreme=45_000,
+        prior_swing_extreme=45_000, momentum_atr=3.2,
+        directional_closes=1, close_breakout_atr=2.8,
+        previous_ema=50_000,
+    )
+    assert result["crash"] is True
+    assert result["single_close_move_atr"] >= 2
+    assert result["base"] is False
+
+
+def test_crash_at_support_or_after_big_rebound_is_rejected():
+    frame = _exception_frame(50_000, 47_500, 50_000, 50_100, 47_400)
+    common = dict(
+        frame=frame, config=config(), side="short", close=47_500,
+        ema_value=49_700, atr_value=800, momentum_atr=3.2,
+        directional_closes=1, close_breakout_atr=2.8,
+        previous_ema=50_000,
+    )
+    near_support = assess_exceptional_entry(
+        price=47_500, prior_20bar_extreme=47_200,
+        prior_swing_extreme=46_500, **common,
+    )
+    after_rebound = assess_exceptional_entry(
+        price=48_400, prior_20bar_extreme=45_000,
+        prior_swing_extreme=45_000, **common,
+    )
+    assert near_support["crash"] is False
+    assert near_support["extreme_room_atr"] < 1
+    assert after_rebound["crash"] is False
+    assert after_rebound["entry_deviation_atr"] > 0.60
+
+
+def test_crash_avoids_chasing_a_prior_overextended_trend():
+    frame = _exception_frame(46_000, 43_500, 46_000, 46_100, 43_400)
+    result = assess_exceptional_entry(
+        frame, config(), side="short", price=43_500, close=43_500,
+        ema_value=49_000, atr_value=800, prior_20bar_extreme=42_000,
+        prior_swing_extreme=42_000, momentum_atr=3.2,
+        directional_closes=1, close_breakout_atr=2.8,
+        previous_ema=49_000,
+    )
+    assert result["crash"] is False
+    assert result["previous_ema_extension_atr"] > 3.0
+
+
+def test_8_nov_new_base_impulse_passes_even_far_below_ema():
+    frame = candles(260, freq="4h", trend=0.0)
+    closes = [75_940, 75_900, 75_920, 76_035, 75_893, 75_829.9, 74_818.1]
+    for index, value in zip(frame.index[-7:], closes):
+        frame.loc[index, "close"] = value
+    frame.loc[frame.index[-1], "open"] = 75_850
+    frame.loc[frame.index[-1], "high"] = 75_900
+    frame.loc[frame.index[-1], "low"] = 74_700
+    result = assess_exceptional_entry(
+        frame, config(), side="short", price=74_606.5, close=74_818.1,
+        ema_value=79_987.9, atr_value=778.967, prior_20bar_extreme=74_800.1,
+        prior_swing_extreme=74_800.1, momentum_atr=1.439,
+        directional_closes=2, close_breakout_atr=1.299,
+        previous_ema=80_009,
+    )
+    assert result["base"] is True
+    assert result["crash"] is False
+    assert result["base_close_range_atr"] < 0.5
+
+
+def test_new_base_does_not_reopen_old_false_short_signals():
+    frame = candles(260, freq="4h", trend=0.0)
+    for breakout, momentum in ((0.75, 1.40), (0.38, 1.47), (0.42, 1.48)):
+        result = assess_exceptional_entry(
+            frame, config(), side="short", price=49_800, close=49_800,
+            ema_value=52_000, atr_value=800, prior_20bar_extreme=47_000,
+            prior_swing_extreme=47_000, momentum_atr=momentum,
+            directional_closes=2, close_breakout_atr=breakout,
+            previous_ema=52_000,
+        )
+        assert result["base"] is False
+        assert result["crash"] is False
+
+
+def test_base_breakout_rejects_new_signal_with_support_under_half_atr():
+    frame = candles(260, freq="4h", trend=0.0)
+    for index, value in zip(frame.index[-7:], [75_940, 75_900, 75_920, 76_035, 75_893, 75_829, 73_837]):
+        frame.loc[index, "close"] = value
+    result = assess_exceptional_entry(
+        frame, config(), side="short", price=73_783.2, close=73_837,
+        ema_value=79_902, atr_value=841.83, prior_20bar_extreme=73_385,
+        prior_swing_extreme=73_385, momentum_atr=2.44,
+        directional_closes=2, close_breakout_atr=1.16,
+        previous_ema=79_933,
+    )
+    assert result["base"] is False
+    assert result["extreme_room_atr"] < 0.5
+
+
+def test_exceptional_path_symmetric_for_long_shock():
+    frame = _exception_frame(50_000, 52_500, 50_000, 52_600, 49_900)
+    result = assess_exceptional_entry(
+        frame, config(), side="long", price=52_500, close=52_500,
+        ema_value=50_300, atr_value=800, prior_20bar_extreme=55_000,
+        prior_swing_extreme=55_000, momentum_atr=3.1,
+        directional_closes=1, close_breakout_atr=2.7,
+        previous_ema=50_000,
+    )
+    assert result["crash"] is True
+
+
+def test_crash_path_in_real_signal_evaluator():
+    frame = candles(260, freq="4h", trend=0.0)
+    frame["open"] = frame["close"]
+    frame["high"] = frame["close"] + 250
+    frame["low"] = frame["close"] - 250
+    frame.loc[frame.index[-10], "low"] = 45_000
+    frame.loc[frame.index[-2], "open"] = 50_000
+    frame.loc[frame.index[-2], "close"] = 50_000
+    frame.loc[frame.index[-1], "open"] = 50_000
+    frame.loc[frame.index[-1], "close"] = 47_500
+    frame.loc[frame.index[-1], "high"] = 50_100
+    frame.loc[frame.index[-1], "low"] = 47_400
+    now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
+    result = evaluate_trend_signal(frame, config(), "test_perpetual", 47_500, now=now)
+    assert result.state == "signal"
+    assert result.side == "short"
+    assert result.factors["signal_type"]["value"] == "crash_impulse_short"
