@@ -116,6 +116,32 @@ fast_trend:
   min_ema_separation_atr: 0.25
   reversal_min_ema_separation_atr: 0.50
 
+# One exceptional closed 4H candle (does not need 3 decreasing closes).
+# A nearby old swing support or a large rebound before entry still vetoes it.
+crash_impulse:
+  enabled: true
+  min_single_close_move_atr: 2.0
+  min_candle_body_atr: 1.25
+  max_close_location: 0.30
+  max_previous_ema_distance_atr: 3.0
+  min_ema_separation_atr: 0.25
+  min_extreme_room_atr: 1.0
+  max_extreme_penetration_atr: 0.75
+  max_entry_deviation_atr: 0.60
+
+# Renewed momentum after a narrow base; prevents permanent 3-ATR EMA lock.
+base_breakout:
+  enabled: true
+  consolidation_bars: 6
+  max_close_range_atr: 1.25
+  min_close_breakout_atr: 0.80
+  min_momentum_atr: 1.25
+  min_directional_closes: 2
+  min_ema_separation_atr: 0.25
+  min_extreme_room_atr: 1.0
+  max_extreme_penetration_atr: 0.75
+  max_entry_deviation_atr: 0.60
+
 structure:
   fib_lookback_bars: 180
   fib_ratios: [0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
