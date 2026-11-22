@@ -142,6 +142,14 @@ base_breakout:
   max_extreme_penetration_atr: 0.75
   max_entry_deviation_atr: 0.60
 
+# Informational alert after a sharp swing and a confirmed move against EMA200.
+countertrend_watch:
+  enabled: true
+  min_prior_swing_atr: 3.0
+  min_recovery_atr: 2.5
+  min_momentum_atr: 1.5
+  min_close_breakout_atr: 0.25
+
 structure:
   fib_lookback_bars: 180
   fib_ratios: [0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
@@ -157,6 +165,8 @@ structure:
   episode_reset_lookback_hours: 720
   episode_reset_pullback_atr: 1.25
   episode_reset_counter_closes: 2
+  # A strong Donchian breakout from a fresh base can also reset the episode.
+  episode_base_max_penetration_atr: 1.75
   episode_hours: 24
 
 # Operational early-short overlay. It does not alter the frozen 0.3.0

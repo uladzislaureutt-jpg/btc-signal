@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from btc_signal.backtest import _simulate, audit_market_data, resample
 from btc_signal.strategy import Decision
@@ -228,3 +229,86 @@ def test_gap_between_candle_slots_is_logged_without_replaying_old_signal(monkeyp
     assert result.decision.factors["coverage"]["missed_4h_bars"] == 1
     assert "::warning::" in capsys.readouterr().out
     assert store.saved[1] is False
+
+
+@pytest.mark.parametrize("previous_in_base", [False, True])
+def test_november_selloff_and_rebound_through_live_runner(monkeypatch, tmp_path, previous_in_base):
+    from btc_signal import runner
+    from btc_signal.storage import SQLiteStore
+    from btc_signal.telegram import format_decision
+    from btc_signal.trend_live import evaluate_trend_signal
+    from conftest import candles
+
+    # OKX 4H OHLC from 19 Nov 2026 12:00 UTC through 21 Nov 20:00 UTC, by close time.
+    episode = [
+        (63714.2, 64054.0, 63530.0, 63918.7),
+        (63918.7, 64048.5, 62748.9, 63075.1),
+        (63075.0, 63395.7, 62188.0, 62341.0),
+        (62340.9, 62437.7, 61388.0, 61949.1),
+        (61949.1, 62621.5, 61256.6, 62123.7),
+        (62123.6, 62126.5, 61350.0, 61818.1),
+        (61818.1, 62317.1, 61520.0, 61782.1),
+        (61782.2, 62155.0, 59360.0, 59444.4),
+        (59444.4, 59796.3, 57695.3, 58522.5),
+        (58522.5, 59374.0, 58166.0, 58919.5),
+        (58919.4, 59209.9, 56334.2, 56700.1),
+        (56700.0, 58636.2, 55100.0, 57959.6),
+        (57959.6, 58627.9, 57341.3, 58177.2),
+        (58177.1, 60970.0, 58115.0, 59908.9),
+        (59908.9, 60448.2, 59750.0, 60331.2),
+    ]
+    frame = candles(260, freq="4h", trend=0.0)
+    frame["close"] += 15_000
+    frame["open"] = frame["close"]
+    frame["high"] = frame["close"] + 600
+    frame["low"] = frame["close"] - 600
+    frame.iloc[-len(episode):, :4] = episode
+    breakout_bar = -8
+
+    store = SQLiteStore(tmp_path / "live.db")
+    previous = _decision("short")
+    previous.timestamp = frame["close_time"].iloc[breakout_bar - (3 if previous_in_base else 30)].isoformat()
+    store.save(previous, True)
+    messages = []
+
+    class Market:
+        last_provider = "okx_swap"
+
+        def snapshot(self, **kwargs):
+            return {"4h": snapshot}, price
+
+    monkeypatch.setattr(runner, "build_market_data", lambda _: Market())
+    monkeypatch.setattr(runner, "build_store", lambda: store)
+    monkeypatch.setattr(runner, "load_config", config)
+    monkeypatch.setattr(runner, "send", lambda decision: messages.append(format_decision(decision)))
+    monkeypatch.setattr(
+        runner, "evaluate_trend_signal",
+        lambda frame, cfg, provider, ticker: evaluate_trend_signal(frame, cfg, provider, ticker, now=now),
+    )
+
+    def run(bar, ticker, **kwargs):
+        nonlocal snapshot, price, now
+        snapshot = frame.iloc[:len(frame) + bar + 1]
+        price = ticker
+        now = snapshot["close_time"].iloc[-1] + pd.Timedelta(minutes=7)
+        return runner.run_once(**kwargs)
+
+    snapshot = price = now = None
+    result = run(breakout_bar, 59_361.2)
+    assert result.notified is not previous_in_base
+    if previous_in_base:
+        assert result.decision.vetoes == ["same_direction_without_structural_reset"]
+    else:
+        assert result.decision.factors["episode_reset"]["method"] == "consolidation_breakout"
+        assert not run(-7, 58_510.1).notified
+        assert not run(-5, 55_713.8).notified
+
+    assert not run(-3, 58_155.2).notified
+    watch = run(-2, 59_886.3)
+    assert watch.decision.state == "watch"
+    assert watch.notified
+    assert watch.decision.entry_low is watch.decision.stop is watch.decision.target_1 is None
+    assert "Отскок после падения" in messages[-1]
+    assert "Стоп-лосс" not in messages[-1]
+    assert run(-2, 59_950.0).duplicate
+    assert not run(-1, 60_381.6).notified

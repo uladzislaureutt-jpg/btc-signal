@@ -77,7 +77,14 @@ def run_once(dry_run: bool = False, notify_watch: bool = True) -> RunResult:
                 minimum_counter_closes=int(structure_cfg.get("episode_reset_counter_closes", 2)),
             )
             decision.factors["episode_reset"] = reset
-            if not reset["confirmed"]:
+            base = decision.factors.get("episode_base")
+            if (
+                not reset["confirmed"] and base
+                and datetime.fromisoformat(previous["candle_time"])
+                < datetime.fromisoformat(base["first_close_time"])
+            ):
+                reset.update(confirmed=True, method="consolidation_breakout")
+            elif not reset["confirmed"]:
                 decision.vetoes.append("same_direction_without_structural_reset")
                 decision.state = "neutral"
                 duplicate = store.seen(decision.dedup_key)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from . import __version__
 from .indicators import atr, ema
 from .strategy import Decision
 
@@ -134,18 +135,18 @@ def assess_exceptional_entry(
         and ema_separation_atr >= float(crash_cfg.get("min_ema_separation_atr", 0.25))
         and safe_structure(crash_cfg)
     )
-    base = (
+    base_setup = (
         bool(base_cfg.get("enabled", False))
         and close_range_atr <= float(base_cfg.get("max_close_range_atr", 1.25))
         and close_breakout_atr >= float(base_cfg.get("min_close_breakout_atr", 0.80))
         and momentum_atr >= float(base_cfg.get("min_momentum_atr", 1.25))
         and directional_closes >= int(base_cfg.get("min_directional_closes", 2))
         and ema_separation_atr >= float(base_cfg.get("min_ema_separation_atr", 0.25))
-        and safe_structure(base_cfg)
     )
     return {
         "crash": bool(crash),
-        "base": bool(base),
+        "base": bool(base_setup and safe_structure(base_cfg)),
+        "base_setup": bool(base_setup),
         "single_close_move_atr": one_bar_change_atr,
         "body_atr": body_atr,
         "close_location": close_location,
@@ -174,9 +175,7 @@ def episode_reset_status(
 ) -> dict[str, object]:
     """Causal reset after the most recent notified entry, using closed 4H candles only.
 
-    A new same-direction EARLY or FAST entry needs a sustained countertrend
-    retracement, followed by the normal fresh signal conditions. Time alone is
-    never treated as a reset.
+    Measures the pullback route to a same-direction episode reset.
     """
     frame = frame_4h.sort_index()
     if "close_time" in frame.columns:
@@ -215,6 +214,50 @@ def episode_reset_status(
     return result
 
 
+def _countertrend_watch(frame: pd.DataFrame, config: dict, factors: dict) -> dict | None:
+    settings = config.get("countertrend_watch", {})
+    if not settings.get("enabled", False):
+        return None
+
+    latest = frame.iloc[-1]
+    side = "long" if latest["close"] < latest["ema"] else "short"
+    direction = 1 if side == "long" else -1
+    recent_changes = frame["close"].tail(5).diff().dropna() * direction
+    # Alert on the first three directional closes, once per local swing.
+    if recent_changes.iloc[0] > 0 or not (recent_changes.iloc[1:] > 0).all():
+        return None
+    setup = factors[f"early_{side}"]
+    if (
+        setup["momentum_atr"] < float(settings["min_momentum_atr"])
+        or setup["close_breakout_atr"] < float(settings["min_close_breakout_atr"])
+    ):
+        return None
+
+    extreme_column, opposing_column = ("low", "high") if side == "long" else ("high", "low")
+    recent = frame.iloc[-4:-1]
+    pivot = (recent[extreme_column] * direction).idxmin()
+    pivot_price = float(frame.loc[pivot, extreme_column])
+    if direction * (latest[extreme_column] - pivot_price) <= 0:
+        return None
+    before_pivot = frame.loc[:pivot].iloc[-7:-1]
+    if not frame.tail(10).index.to_series().diff().iloc[1:].eq(pd.Timedelta(hours=4)).all():
+        return None
+    prior_extreme = float((before_pivot[opposing_column] * direction).max())
+    prior_swing_atr = (prior_extreme - direction * pivot_price) / latest["atr"]
+    recovery_atr = direction * (latest["close"] - pivot_price) / latest["atr"]
+    if (
+        prior_swing_atr < float(settings["min_prior_swing_atr"])
+        or recovery_atr < float(settings["min_recovery_atr"])
+    ):
+        return None
+    return {
+        "side": side,
+        "pivot_price": pivot_price,
+        "prior_swing_atr": prior_swing_atr,
+        "recovery_atr": recovery_atr,
+    }
+
+
 def _neutral(
     *,
     timestamp: str,
@@ -240,7 +283,7 @@ def _neutral(
         factors=factors,
         vetoes=vetoes,
         provider=provider,
-        strategy_version="0.4.3",
+        strategy_version=__version__,
     )
 
 
@@ -549,7 +592,9 @@ def evaluate_trend_signal(
         "reversal_confirmed": long_reversal_confirmed,
         "above_ema200": values["close"] >= values["ema"],
     }
-    if not any((long_signal, short_signal, fast_short_signal, fast_long_signal, crash_short_signal, crash_long_signal, base_short_signal, base_long_signal, early_short_signal, early_long_signal)):
+    has_entry = any((long_signal, short_signal, fast_short_signal, fast_long_signal, crash_short_signal, crash_long_signal, base_short_signal, base_long_signal, early_short_signal, early_long_signal))
+    watch = None if has_entry else _countertrend_watch(frame, config, base_factors)
+    if not has_entry and watch is None:
         return _neutral(
             timestamp=signal_time.isoformat(),
             price=current_price,
@@ -569,9 +614,18 @@ def evaluate_trend_signal(
             timestamp=signal_time.isoformat(),
             price=current_price,
             provider=provider,
-            vetoes=["stale_breakout"],
+            vetoes=["stale_breakout" if has_entry else "stale_countertrend_watch"],
             factors=base_factors,
         )
+
+    if watch is not None:
+        decision = _neutral(
+            timestamp=signal_time.isoformat(), price=current_price, provider=provider,
+            vetoes=[], factors={**base_factors, "countertrend_watch": watch},
+        )
+        decision.state = "watch"
+        decision.regime = "countertrend_watch"
+        return decision
 
     side = "long" if (long_signal or fast_long_signal or crash_long_signal or base_long_signal or early_long_signal) else "short"
     if fast_long_signal:
@@ -593,6 +647,27 @@ def evaluate_trend_signal(
     else:
         signal_type = "trend_breakout"
     direction = 1.0 if side == "long" else -1.0
+
+    base_cfg = config.get("base_breakout", {})
+    maximum_penetration = structure_cfg.get("episode_base_max_penetration_atr")
+    if signal_type == "trend_breakout" and base_cfg.get("enabled") and maximum_penetration is not None:
+        setup = exception_long if side == "long" else exception_short
+        room = setup["extreme_room_atr"]
+        width_bars = max(2, int(base_cfg["consolidation_bars"]))
+        window = frame.tail(width_bars + 1)
+        if (
+            len(window) == width_bars + 1
+            and window.index.to_series().diff().iloc[1:].eq(pd.Timedelta(hours=4)).all()
+            and setup["base_setup"]
+            and (long_ema_confirmed if side == "long" else short_ema_confirmed)
+            and setup["close_location"] <= float(config.get("crash_impulse", {}).get("max_close_location", 0.30))
+            and (room is None or room >= float(base_cfg.get("min_extreme_room_atr", 1.0)))
+            and 0 < setup["prior_extreme_penetration_atr"] <= float(maximum_penetration)
+            and setup["entry_deviation_atr"] <= float(base_cfg.get("max_entry_deviation_atr", 0.60))
+        ):
+            base_factors["episode_base"] = {
+                "first_close_time": (signal_time - pd.Timedelta(hours=4 * width_bars)).isoformat(),
+            }
 
     # EARLY is an entry ahead of a confirmed 20-bar breakout, not permission
     # to chase an extended trend. FAST and the frozen Donchian core remain
@@ -832,5 +907,5 @@ def evaluate_trend_signal(
         factors=factors,
         vetoes=[],
         provider=provider,
-        strategy_version="0.4.3",
+        strategy_version=__version__,
     )
