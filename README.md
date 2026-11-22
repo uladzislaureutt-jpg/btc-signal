@@ -1,4 +1,4 @@
-# BTC Signal Core 0.4.3
+# BTC Signal Core 0.4.4
 
 Сервис формирует редкие торговые сигналы по `BTCUSDT perpetual`:
 
@@ -24,7 +24,7 @@
 - TP1/TP2: структурные ориентиры по Fibonacci доминирующего 30-дневного 4H swing; слишком близкие уровни пропускаются, TP1 должен давать не менее 1R, TP2 — не менее 1.5R;
 - новый вход не выдаётся поздно в коррекции, если после прохождения 50% swing до следующего Fibonacci-уровня остаётся меньше 1,5 ATR;
 - если структура не даёт минимум 1R для TP1 и 1.5R для TP2 относительно ATR-стопа, обычный/ EARLY сигнал отклоняется; FAST TREND не блокируется промежуточным Fibonacci-уровнем — структура только корректирует цели;
-- повторный сигнал того же направления подавляется в течение 24 часов как один торговый эпизод;
+- повторный сигнал того же направления требует завершения предыдущего торгового эпизода;
 - смена направления через EARLY-сигнал требует directional reset: 2 закрытия по другую сторону EMA200, подтверждённый momentum и расстояние от EMA200 минимум 0,5 ATR; обычный 20-bar breakout может сменить направление без этого ограничения;
 - основной выход: trailing stop 3 ATR после движения на 1 ATR в прибыль;
 - сигнал отменяется, если риск до стопа меньше чем в 4 раза превышает принятые round-trip издержки;
@@ -47,11 +47,14 @@ btc-signal live --dry-run
 
 Без `--dry-run` новый сигнал сохраняется в Supabase/SQLite и отправляется в Telegram. Нейтральные состояния не отправляются.
 
+`WATCH` сообщает о сильном движении против EMA200, подтверждённом на закрытии 4H. Уведомление не содержит цены входа, стопа или целей. Флаг `--no-watch` отключает эти уведомления.
+
 ## GitHub Actions
 
 Workflow **BTC trend signal** запускается:
 
-- автоматически через 7 минут после закрытия каждой 4H-свечи UTC;
+- через внешний диспетчер спустя 7 минут после закрытия каждой 4H-свечи UTC;
+- через резервное расписание GitHub Actions с целевым смещением 17 минут;
 - вручную через `Actions → BTC trend signal → Run workflow`.
 
 Для рабочего запуска нужны secrets:
@@ -121,6 +124,20 @@ and absolute 3-ATR EMA gates:
 - Frozen research 20-bar Donchian signals, ordinary EARLY stage checks, and
   the original multi-candle FAST rules remain intact. These new live filters
   are **not** supported by an independently validated historical return study.
+
+### Renewed breakouts and countertrend alerts (0.4.4)
+
+A confirmed 20-bar breakout can start a new same-direction episode from a
+fresh six-candle consolidation formed after the last notified entry. It must
+meet the base momentum and range thresholds, close in the directional 30% of
+the candle, and pass the live-price drift and prior-extreme checks. The fresh
+entry must be beyond the 20-bar level by at most 1.75 ATR. Elapsed time alone
+does not release a same-direction episode.
+
+`WATCH` is emitted on the first three consecutive directional closes after a
+local swing of at least 3 ATR, with at least 2.5 ATR recovered from the
+extreme, 1.5 ATR momentum and a 0.25 ATR close-level breakout against EMA200.
+It is informational and does not reset the history of notified entries.
 
 ### Missed scheduler slot diagnostics
 

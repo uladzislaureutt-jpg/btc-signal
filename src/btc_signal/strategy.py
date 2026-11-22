@@ -37,9 +37,11 @@ class Decision:
 
     @property
     def dedup_key(self) -> str:
-        if self.strategy_version in {"0.3.1", "0.3.2", "0.3.3", "0.3.4", "0.3.5", "0.3.6", "0.4.0", "0.4.1", "0.4.2", "0.4.3"}:
+        # A deployment within the same candle must not resend an existing alert.
+        dedup_version = "0.4.3" if self.strategy_version == "0.4.4" else self.strategy_version
+        if dedup_version in {"0.3.1", "0.3.2", "0.3.3", "0.3.4", "0.3.5", "0.3.6", "0.4.0", "0.4.1", "0.4.2", "0.4.3"}:
             identity = [
-                self.strategy_version,
+                dedup_version,
                 self.timestamp,
                 self.state,
                 self.side,

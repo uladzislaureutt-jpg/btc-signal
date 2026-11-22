@@ -12,6 +12,19 @@ def _money(value: float | None) -> str:
 
 
 def format_decision(decision: Decision) -> str:
+    watch = decision.factors.get("countertrend_watch")
+    if decision.state == "watch" and watch:
+        title = "Отскок после падения" if watch["side"] == "long" else "Откат после роста"
+        trend = "ниже" if watch["side"] == "long" else "выше"
+        return (
+            f"<b>BTCUSDT PERPETUAL · WATCH</b>\n\n"
+            f"{title} · {watch['recovery_atr']:.1f} ATR(4H)\n"
+            f"Экстремум: {_money(watch['pivot_price'])}\n"
+            f"Закрытие 4H: {_money(decision.factors['trend']['close'])}\n"
+            f"Цена остаётся {trend} EMA200. Торгового входа нет.\n\n"
+            f"Источник: {decision.provider or '—'}\n"
+            f"Свеча закрыта: {decision.timestamp}"
+        )
     side = (decision.side or "—").upper()
     breakout = decision.level or {}
     exit_plan = decision.factors.get("exit_plan", {})
