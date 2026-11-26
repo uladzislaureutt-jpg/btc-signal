@@ -28,10 +28,10 @@ def _breakout_frame(side: str) -> pd.DataFrame:
 def test_long_signal_contains_entry_stop_targets_and_trailing_plan():
     frame = _breakout_frame("long")
     now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
-    decision = evaluate_trend_signal(frame, config(), "test_perpetual", 55_000.0, now=now)
+    decision = evaluate_trend_signal(frame, config(), "test_perpetual", 55_200.0, now=now)
     assert decision.state == "signal"
     assert decision.side == "long"
-    assert decision.entry_low == decision.entry_high == 55_000.0
+    assert decision.entry_low == decision.entry_high == 55_200.0
     assert decision.stop < decision.entry_low < decision.target_1 < decision.target_2
     assert decision.factors["exit_plan"]["trailing_distance_atr"] == 3.0
     assert decision.strategy_version == __version__
@@ -359,8 +359,8 @@ def test_no_breakout_is_neutral():
 def test_same_breakout_deduplicates_when_live_price_moves():
     frame = _breakout_frame("long")
     now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
-    first = evaluate_trend_signal(frame, config(), "test_perpetual", 55_000.0, now=now)
-    second = evaluate_trend_signal(frame, config(), "test_perpetual", 55_100.0, now=now)
+    first = evaluate_trend_signal(frame, config(), "test_perpetual", 55_200.0, now=now)
+    second = evaluate_trend_signal(frame, config(), "test_perpetual", 55_300.0, now=now)
     assert first.state == second.state == "signal"
     assert first.dedup_key == second.dedup_key
 
