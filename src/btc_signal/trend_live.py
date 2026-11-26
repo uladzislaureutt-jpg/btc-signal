@@ -67,6 +67,35 @@ def assess_early_entry_stage(
     return stage, None
 
 
+
+def assess_trend_breakout_quality(
+    *, side: str, close: float, live_price: float, ema_value: float,
+    atr_value: float, channel_level: float,
+    extended_ema_distance_atr: float, extended_min_breakout_atr: float,
+) -> tuple[dict[str, float], list[str]]:
+    """Reject a reclaimed Donchian break or a late, negligible new extreme.
+
+    Production-only entry validation: historical research logic is unchanged.
+    """
+    direction = 1.0 if side == "long" else -1.0
+    close_depth_atr = direction * (close - channel_level) / atr_value
+    live_depth_atr = direction * (live_price - channel_level) / atr_value
+    ema_distance_atr = direction * (close - ema_value) / atr_value
+    factors = {
+        "channel_level": channel_level,
+        "close_breakout_atr": close_depth_atr,
+        "live_breakout_atr": live_depth_atr,
+        "ema_distance_atr": ema_distance_atr,
+        "extended_ema_distance_atr": extended_ema_distance_atr,
+        "extended_min_breakout_atr": extended_min_breakout_atr,
+    }
+    vetoes: list[str] = []
+    if live_depth_atr <= 0:
+        vetoes.append("breakout_reclaimed_before_entry")
+    if ema_distance_atr >= extended_ema_distance_atr and close_depth_atr < extended_min_breakout_atr:
+        vetoes.append("overextended_shallow_breakout")
+    return factors, vetoes
+
 def assess_exceptional_entry(
     frame: pd.DataFrame, config: dict, *, side: str, price: float,
     close: float, ema_value: float, atr_value: float,
@@ -647,6 +676,22 @@ def evaluate_trend_signal(
     else:
         signal_type = "trend_breakout"
     direction = 1.0 if side == "long" else -1.0
+
+    if signal_type == "trend_breakout":
+        quality, quality_vetoes = assess_trend_breakout_quality(
+            side=side, close=values["close"], live_price=current_price,
+            ema_value=values["ema"], atr_value=values["atr"],
+            channel_level=values["prior_high"] if side == "long" else values["prior_low"],
+            extended_ema_distance_atr=float(structure_cfg.get("extended_breakout_ema_distance_atr", 6.0)),
+            extended_min_breakout_atr=float(structure_cfg.get("extended_breakout_min_depth_atr", 0.20)),
+        )
+        base_factors["breakout_quality"] = quality
+        base_factors["signal_type"] = {"value": signal_type}
+        if quality_vetoes:
+            return _neutral(
+                timestamp=signal_time.isoformat(), price=current_price, provider=provider,
+                vetoes=quality_vetoes, factors=base_factors,
+            )
 
     base_cfg = config.get("base_breakout", {})
     maximum_penetration = structure_cfg.get("episode_base_max_penetration_atr")

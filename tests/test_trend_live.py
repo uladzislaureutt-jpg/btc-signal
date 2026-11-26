@@ -5,7 +5,7 @@ import pandas as pd
 
 from btc_signal import __version__
 from btc_signal.strategy import Decision
-from btc_signal.trend_live import assess_early_entry_stage, assess_exceptional_entry, episode_reset_status, evaluate_trend_signal
+from btc_signal.trend_live import assess_early_entry_stage, assess_exceptional_entry, assess_trend_breakout_quality, episode_reset_status, evaluate_trend_signal
 from conftest import candles, config
 
 
@@ -28,10 +28,10 @@ def _breakout_frame(side: str) -> pd.DataFrame:
 def test_long_signal_contains_entry_stop_targets_and_trailing_plan():
     frame = _breakout_frame("long")
     now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
-    decision = evaluate_trend_signal(frame, config(), "test_perpetual", 55_000.0, now=now)
+    decision = evaluate_trend_signal(frame, config(), "test_perpetual", 55_200.0, now=now)
     assert decision.state == "signal"
     assert decision.side == "long"
-    assert decision.entry_low == decision.entry_high == 55_000.0
+    assert decision.entry_low == decision.entry_high == 55_200.0
     assert decision.stop < decision.entry_low < decision.target_1 < decision.target_2
     assert decision.factors["exit_plan"]["trailing_distance_atr"] == 3.0
     assert decision.strategy_version == __version__
@@ -359,8 +359,8 @@ def test_no_breakout_is_neutral():
 def test_same_breakout_deduplicates_when_live_price_moves():
     frame = _breakout_frame("long")
     now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
-    first = evaluate_trend_signal(frame, config(), "test_perpetual", 55_000.0, now=now)
-    second = evaluate_trend_signal(frame, config(), "test_perpetual", 55_100.0, now=now)
+    first = evaluate_trend_signal(frame, config(), "test_perpetual", 55_200.0, now=now)
+    second = evaluate_trend_signal(frame, config(), "test_perpetual", 55_300.0, now=now)
     assert first.state == second.state == "signal"
     assert first.dedup_key == second.dedup_key
 
@@ -606,3 +606,48 @@ def test_base_consolidation_reentry_in_full_signal_evaluator():
     assert decision.side == "short"
     assert decision.factors["signal_type"]["value"] == "base_breakout_short"
     assert decision.factors["trend"]["ema"] - decision.factors["trend"]["close"] > 3 * decision.factors["volatility"]["atr"]
+
+
+def test_reclaimed_standard_short_is_vetoed_at_execution():
+    frame = _breakout_frame("short")
+    prior_low = float(frame["low"].iloc[-21:-1].min())
+    now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
+    decision = evaluate_trend_signal(frame, config(), "test_perpetual", prior_low + 20, now=now)
+    assert decision.state == "neutral"
+    assert "breakout_reclaimed_before_entry" in decision.vetoes
+    assert decision.factors["breakout_quality"]["live_breakout_atr"] < 0
+
+
+def test_reclaimed_standard_long_is_vetoed_at_execution():
+    frame = _breakout_frame("long")
+    prior_high = float(frame["high"].iloc[-21:-1].max())
+    now = pd.Timestamp(frame["close_time"].iloc[-1]) + pd.Timedelta(minutes=5)
+    decision = evaluate_trend_signal(frame, config(), "test_perpetual", prior_high - 20, now=now)
+    assert decision.state == "neutral"
+    assert "breakout_reclaimed_before_entry" in decision.vetoes
+
+
+def test_november_25_2026_micro_breakdown_rejected_before_short_alert():
+    # Production row 375: only information available at decision time.
+    quality, vetoes = assess_trend_breakout_quality(
+        side="short", close=58710.8, live_price=58770.3, ema_value=70168.37778435311,
+        atr_value=1254.6915469321443, channel_level=58731.0,
+        extended_ema_distance_atr=6.0, extended_min_breakout_atr=0.20,
+    )
+    assert set(vetoes) == {"breakout_reclaimed_before_entry", "overextended_shallow_breakout"}
+    assert 0 < quality["close_breakout_atr"] < 0.02
+    assert quality["ema_distance_atr"] > 9
+
+
+def test_november_10_and_12_meaningful_breakdowns_still_pass_quality_gate():
+    for close, live_price, ema_value, atr_value, old_low in [
+        (73177.4, 73155.6, 79400.0, 950.0, 73385.0),
+        (71682.7, 71893.3, 78800.0, 950.0, 72688.0),
+    ]:
+        quality, vetoes = assess_trend_breakout_quality(
+            side="short", close=close, live_price=live_price,
+            ema_value=ema_value, atr_value=atr_value, channel_level=old_low,
+            extended_ema_distance_atr=6.0, extended_min_breakout_atr=0.20,
+        )
+        assert vetoes == []
+        assert quality["close_breakout_atr"] >= 0.20

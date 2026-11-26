@@ -160,6 +160,9 @@ structure:
   # Only for operational EARLY entries; leave FAST and frozen 20-bar unchanged.
   early_max_ema_distance_atr: 3.0
   early_min_extreme_room_atr: 1.0
+  # Production Donchian entries: prevent weak late-stage breaks and reclaimed levels.
+  extended_breakout_ema_distance_atr: 6.0
+  extended_breakout_min_depth_atr: 0.20
   swing_extreme_lookback_bars: 180
   # Reset of same-side signals requires a meaningful close-based pullback.
   episode_reset_lookback_hours: 720
